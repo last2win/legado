@@ -21,9 +21,9 @@ import kotlinx.atomicfu.locks.synchronized
  * - 拦截器: desktop 挂 OkHttpExceptionInterceptor / 头注入 / DecompressInterceptor; 两端 KmpInterceptor
  *   是编译占位, 异常处理由各自引擎完成, 头注入 / UA / CookieJar 桥接在 KmpRequest.prepareForSend
  *   内等价实现 (与 Android app 拦截器行为对齐);
- * - SSL: desktop 用 SSLHelper.unsafeSSLSocketFactory; 两端走系统信任库, 无 unsafe 模式;
+ * - SSL: desktop 用 系统信任库; 两端走系统信任库, 无 unsafe 模式;
  * - 代理: desktop 解析协议串构造 Proxy; 两端 http/https 经 [buildNativeProxyClient] 各自引擎实现,
- *   socks4/socks5 两端引擎均不支持 (回退主 client 直连, 与 Android 构造 SOCKS 代理的行为差异)。
+ *   socks4/socks5 两端引擎均不支持 (拒绝请求, 与 Android 构造 SOCKS 代理的行为差异)。
  *
  * # 调用时机
  *
@@ -51,7 +51,7 @@ class NativeHttpProvider : OkHttpClientProvider, OkHttpProxyClientProvider {
      *
      * - http/https 代理: 经 [buildNativeProxyClient] 走各端实现 (iOS Darwin engine; 鸿蒙
      *   @ohos.net.http HttpProxy, API 12+ 原生带账号密码);
-     * - socks4/socks5: 两端引擎都不支持 SOCKS, 回退主 client 直连
+     * - socks4/socks5: 两端引擎都不支持 SOCKS, 拒绝请求
      *   (与 Android 行为差异: Android 会构造 SOCKS 代理, 已说明)。
      *
      * 代理串格式非法时抛异常 (与 Android 对非法格式 fail-loud 一致, 避免用户配置的代理被静默绕过)。
@@ -71,30 +71,8 @@ class NativeHttpProvider : OkHttpClientProvider, OkHttpProxyClientProvider {
     }
 
     private fun createProxyClient(proxy: String): KmpHttpClient {
-        // 与 Android HttpHelper 同正则: (http|https|socks4|socks5)://host:port(@user@pass)?
-        val r = Regex("(http|https|socks4|socks5)://(.*):(\\d{2,5})(@.*@.*)?")
-        val group = r.find(proxy)
-            ?: throw IllegalArgumentException("代理格式错误: $proxy (应为 http(s)|socks4|socks5://host:port(@user@pass)?)")
-        val type = group.groupValues[1]
-        val host = group.groupValues[2]
-        val port = group.groupValues[3].toInt()
-        var username = ""
-        var password = ""
-        if (group.groupValues[4] != "") {
-            username = group.groupValues[4].split("@")[1]
-            password = group.groupValues[4].split("@")[2]
-        }
-        if (host.isEmpty()) {
-            // 与 Android 一致: host 为空回退主 client
-            return okHttpClient
-        }
-        if (type.startsWith("http")) {
-            val usernameOrNull = username.ifEmpty { null }
-            val passwordOrNull = password.ifEmpty { null }
-            return buildNativeProxyClient(host, port, usernameOrNull, passwordOrNull)
-        }
-        // socks4/socks5: 两端引擎不支持 SOCKS, 回退主 client 直连 (见类注释)
-        return okHttpClient
+        val config = NativeProxyConfig.parse(proxy)
+        return buildNativeProxyClient(config.host, config.port, config.username, config.password)
     }
 }
 

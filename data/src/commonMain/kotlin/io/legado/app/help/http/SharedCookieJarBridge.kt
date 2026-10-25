@@ -45,18 +45,19 @@ class SharedCookieJarBridge : CookieJarBridge {
         val urlString = request.url.toString()
         val domain = NetworkUtils.getSubDomain(urlString)
 
-        val storeCookie = store.getCookie(domain)
+        val storeCookie = store.getCookieForSource(request.header(cookieScopeHeader), urlString)
         val requestCookie = request.header("Cookie")
 
         val newCookie = mergeCookies(requestCookie, storeCookie) ?: return request
 
         return try {
             request.newBuilder()
+                .removeHeader(cookieScopeHeader)
                 .header("Cookie", newCookie)
                 .build()
         } catch (e: Exception) {
             store.removeCookie(urlString)
-            val msg = "设置cookie出错，已清除cookie $domain cookie:$newCookie"
+            val msg = "设置cookie出错，已清除cookie $domain"
             AppLog.put(msg, e)
             request
         }
@@ -71,6 +72,10 @@ class SharedCookieJarBridge : CookieJarBridge {
      */
     override fun saveResponse(response: KmpResponse) {
         val store = CookieStoreProviders.get() ?: return
+        if (store is StructuredCookieStore) {
+            store.saveResponseCookies(response.request.header(cookieScopeHeader), response)
+            return
+        }
         val url = response.request.url
         saveCookiesFromHeaders(url, response.headers(), store)
     }

@@ -36,6 +36,19 @@ import okio.Path.Companion.toPath
  * 模式参考 [NativeFileCacheProvider] / [NativeFileDownloader]。
  */
 actual object FileUtilsCommon {
+    actual fun resolveSourcePath(sourceKey: String?, relativePath: String): String {
+        val root = scriptStorageRoot(sourceKey)
+        val relative = checkedScriptPath(relativePath)
+        var current = getCachePath().trimEnd('/')
+        for (segment in "$root/$relative".split('/')) {
+            current += "/$segment"
+            require(okio.FileSystem.SYSTEM.metadataOrNull(current.toPath())?.symlinkTarget == null) {
+                "Symbolic links are not allowed in script storage"
+            }
+        }
+        return current
+    }
+
 
     actual fun getCachePath(): String {
         // iOS/鸿蒙: 走 AppFilesDirs.cacheDir (无 externalCacheDir 概念)

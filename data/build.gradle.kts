@@ -585,8 +585,9 @@ kotlin {
                 }
             }
             if (enableIosTarget) {
-                maybeCreate("iosArm64Test").dependsOn(nativeTest)
-                maybeCreate("iosSimulatorArm64Test").dependsOn(nativeTest)
+                val iosTest = maybeCreate("iosTest").apply { dependsOn(nativeTest) }
+                maybeCreate("iosArm64Test").dependsOn(iosTest)
+                maybeCreate("iosSimulatorArm64Test").dependsOn(iosTest)
             }
             if (enableOhosTarget) {
                 maybeCreate("ohosArm64Test").dependsOn(nativeTest)

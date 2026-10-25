@@ -1,5 +1,7 @@
 package io.legado.app.help
 
+import okio.Path.Companion.toPath
+
 import io.legado.app.help.FileUtilsCommon.createFileReplace
 import io.legado.app.help.FileUtilsCommon.delete
 import io.legado.app.help.FileUtilsCommon.getCachePath
@@ -31,6 +33,19 @@ import java.io.File
  *   被占用时走备份让位重试), 失败收成 false
  */
 actual object FileUtilsCommon {
+    actual fun resolveSourcePath(sourceKey: String?, relativePath: String): String {
+        val root = scriptStorageRoot(sourceKey)
+        val relative = checkedScriptPath(relativePath)
+        var current = getCachePath().trimEnd('/')
+        for (segment in "$root/$relative".split('/')) {
+            current += "/$segment"
+            require(okio.FileSystem.SYSTEM.metadataOrNull(current.toPath())?.symlinkTarget == null) {
+                "Symbolic links are not allowed in script storage"
+            }
+        }
+        return current
+    }
+
 
     actual fun getCachePath(): String {
         // 优先 externalCacheDir (Android 有, 桌面 null), 退化到 cacheDir (与 AppFilesDirs 设计一致)

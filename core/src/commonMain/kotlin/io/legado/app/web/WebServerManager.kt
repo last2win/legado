@@ -1,5 +1,6 @@
 package io.legado.app.web
 
+import io.legado.app.web.api.WebAccess
 import io.legado.app.constant.EventBus
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.utils.postEvent
@@ -71,13 +72,17 @@ object WebServerManager {
         // 先停旧实例 (原 upWebServer 首段: httpServer?.isAlive==true → stop; webSocketServer 同理)
         WebServerPlatforms.get().stopServers()
         val port = getPort()
-        val result = WebServerPlatforms.get().startServers(port)
+        WebAccess.start()
+        val result = WebServerPlatforms.get().startServers(port).let {
+            it.copy(addresses = it.addresses.map(WebAccess::accessUrl))
+        }
         val addresses = result.addresses
         if (addresses.isNotEmpty()) {
             isRun = true
             hostAddresses = addresses
             hostAddress = addresses.first()
         } else {
+            WebAccess.stop()
             isRun = false
             hostAddresses = emptyList()
             hostAddress = ""
@@ -93,6 +98,7 @@ object WebServerManager {
      */
     fun stop(): Unit = synchronized(lock) {
         WebServerPlatforms.get().stopServers()
+        WebAccess.stop()
         isRun = false
         hostAddress = ""
         hostAddresses = emptyList()
@@ -129,8 +135,8 @@ object WebServerManager {
      */
     fun updateAddresses(addresses: List<String>, unavailableText: String = "") = synchronized(lock) {
         if (addresses.isNotEmpty()) {
-            hostAddresses = addresses
-            hostAddress = addresses.first()
+            hostAddresses = addresses.map(WebAccess::accessUrl)
+            hostAddress = hostAddresses.first()
         } else {
             hostAddresses = emptyList()
             hostAddress = unavailableText

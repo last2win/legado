@@ -37,4 +37,5 @@ import io.legado.app.help.storage.NativeZipCodec
  */
 actual fun inflateRaw(
     compressed: ByteArray, offset: Int, length: Int, expectedSize: Int
-): ByteArray = NativeZipCodec.inflate(compressed, offset, length)
+): ByteArray = NativeZipCodec.inflate(compressed, offset, length,
+    if (expectedSize >= 0) expectedSize else io.legado.app.help.storage.ArchiveLimits.MAX_ENTRY_BYTES)

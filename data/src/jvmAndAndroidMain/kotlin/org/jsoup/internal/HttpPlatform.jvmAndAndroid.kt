@@ -13,17 +13,12 @@ import okio.source
 import org.jsoup.Connection
 import java.io.UncheckedIOException
 import java.net.URLEncoder
-import java.security.SecureRandom
-import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 import java.util.zip.Inflater
 import java.util.zip.InflaterInputStream
-import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocketFactory
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 import kotlin.io.inputStream
 import kotlin.io.readBytes
 import kotlin.io.use
@@ -59,14 +54,12 @@ internal actual fun buildPlatformClient(
         // 共享 client 的整次请求超时 (见挑战拦截器的时间预算) 会盖过上面 per-request 的
         // connect/read 超时, 二者同时生效时以更短的一方为准, 故清零让 per-request 值生效
         builder.callTimeout(0, TimeUnit.MILLISECONDS)
-    } else {
-        builder.hostnameVerifier(AllHostHostnameVerifier)
     }
 
     (request.sslSocketFactory() as? SSLSocketFactory)?.let { factory ->
-        builder.sslSocketFactory(factory, UnsafeTrustManager)
+        builder.sslSocketFactory(factory, io.legado.app.help.http.SSLHelper.unsafeTrustManager)
     } ?: (request.sslContext() as? SSLContext)?.let { ctx ->
-        builder.sslSocketFactory(ctx.socketFactory, UnsafeTrustManager)
+        builder.sslSocketFactory(ctx.socketFactory, io.legado.app.help.http.SSLHelper.unsafeTrustManager)
     }
 
     return builder.build()
@@ -116,24 +109,6 @@ internal actual fun defaultSharedHttpClient(): KmpHttpClient? = null
 
 internal actual fun uncheckedIoException(e: IOException): Throwable = UncheckedIOException(e)
 
-/** 兼容所有 host 的 HostnameVerifier,与 jsoup 默认行为对齐 */
-private object AllHostHostnameVerifier : HostnameVerifier {
-    override fun verify(hostname: String, session: javax.net.ssl.SSLSession): Boolean = true
-}
-
-/**
- * 信任所有证书的 TrustManager,仅在调用方主动传入 [SSLContext] / [SSLSocketFactory] 时使用
- * (JsExtensions 传入的 SSLHelper.unsafeSslContext 即期望信任全部)
- */
-private object UnsafeTrustManager : X509TrustManager {
-    override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
-    override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
-    override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
-}
-
-/** 私有可用作 SSLContext 默认初始化的工厂 (内部使用) */
-internal val UnsafeSslContext: SSLContext by lazy {
-    SSLContext.getInstance("TLS").apply {
-        init(null, arrayOf<TrustManager>(UnsafeTrustManager), SecureRandom())
-    }
-}
+/** Kept for callers of the compatibility API; uses platform trust and hostname checks. */
+internal val UnsafeSslContext: SSLContext
+    get() = io.legado.app.help.http.SSLHelper.unsafeSslContext

@@ -132,6 +132,7 @@ class EpubFile(var book: Book) {
                     // 书籍保存位置/导入目录找回), 再 readBytes → EpubParser.parse
                     val path = LocalBookLocators.get().getReadableFileRef(book)
                         ?: book.bookUrl.removePrefix("file://")
+                    require(File(path).length() <= io.legado.app.help.storage.ArchiveLimits.MAX_INPUT_BYTES) { "EPUB input size limit exceeded" }
                     val bytes = File(path).readBytes()
                     EpubParser.parse(bytes)
                 }
@@ -174,6 +175,7 @@ class EpubFile(var book: Book) {
                 webDav.downloadTo(cachePath, true)
             }
         }
+        require(cacheFile.length() <= io.legado.app.help.storage.ArchiveLimits.MAX_INPUT_BYTES) { "EPUB input size limit exceeded" }
         return EpubParser.parse(cacheFile.readBytes())
     }
 

@@ -104,7 +104,6 @@ import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.useContents
 import kotlinx.cinterop.value
-import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.cinterop.readBytes
@@ -172,13 +171,15 @@ internal fun qjsEvalUtf8(
  * 编译验证: ./gradlew :data:compileKotlinIosArm64 / compileKotlinIosSimulatorArm64 /
  * compileKotlinLinuxArm64 -PenableOhosTarget=true。
  */
+@kotlin.native.concurrent.ThreadLocal
+private var threadLocalScope: NativeJsScope? = null
+
 object NativeJsEngine : JsEngine {
 
     /** 引擎类型, 复用 QUICKJS ([JsEngines.type] 硬编码 QUICKJS, 切换入口已撤)。 */
     override val type: JsEngineType = JsEngineType.QUICKJS
 
     /** 当前线程的 JS 执行上下文 (ThreadLocal), 对应 quickjs 的 QuickJsContext.threadLocalContext。 */
-    private val threadLocalScope = atomic<NativeJsScope?>(null)
 
     /** JS 递归深度上限, 对齐 QuickJsContext.MAX_RECURSION。 */
     private const val MAX_RECURSION = 10
@@ -287,7 +288,7 @@ object NativeJsEngine : JsEngine {
     override fun compile(script: String, scope: JsScope): JsCompiledScript {
         val nativeScope = scope as? NativeJsScope
             ?: error("NativeJsEngine.compile requires NativeJsScope, got ${scope::class}")
-        return compileToBytecode(script, nativeScope.ctx!!, "<compile>")
+        return nativeScope.withUse { compileToBytecode(script, nativeScope.ctx!!, "<compile>") }
     }
 
     /**
@@ -367,38 +368,40 @@ object NativeJsEngine : JsEngine {
     ): Any? {
         val nativeScope = scope as? NativeJsScope
             ?: error("NativeJsEngine.evalInSubScope requires NativeJsScope, got ${scope::class}")
-        val nativeCtx = nativeScope.ctx!!
-        // 同步 dangerousApi (native 上语义为 no-op, 保留字段对齐)
-        nativeScope.dangerousApi = bindings.dangerousApi
-        val prevScope = threadLocalScope.value
-        threadLocalScope.value = nativeScope
-        nativeScope.coroutineContext = coroutineContext
-        nativeScope.recursiveCount++
-        try {
-            nativeScope.checkRecursive()
-            // 快照 handle 数: eval 后释放本次注入新增的 handle (对齐 JVM releaseNewHandles)
-            val handleSnapshot = nativeScope.handles.size
-            // 构造 kvs (须在压栈后: toJsValue 的 JsExtensionsCommon/BookLike 分支依赖 threadLocalScope)
-            val kvs = buildBindingKvsValues(nativeCtx, bindings)
+        return nativeScope.withUse {
+            val nativeCtx = nativeScope.ctx!!
+            // 同步 dangerousApi (native 上语义为 no-op, 保留字段对齐)
+            nativeScope.dangerousApi = bindings.dangerousApi
+            val prevScope = threadLocalScope
+            threadLocalScope = nativeScope
+            nativeScope.coroutineContext = coroutineContext
+            nativeScope.recursiveCount++
             try {
-                // 进入子 scope: JS_Call 值参数压栈 bindings (免字符串 eval)
-                enterBindingsWithValues(nativeCtx, kvs)
-                return try {
-                    callEvalUserScript(nativeCtx, jsStr)
+                nativeScope.checkRecursive()
+                // 快照 handle 数: eval 后释放本次注入新增的 handle (对齐 JVM releaseNewHandles)
+                val handleSnapshot = nativeScope.handles.size
+                // 构造 kvs (须在压栈后: toJsValue 的 JsExtensionsCommon/BookLike 分支依赖 threadLocalScope)
+                val kvs = buildBindingKvsValues(nativeCtx, bindings)
+                try {
+                    // 进入子 scope: JS_Call 值参数压栈 bindings (免字符串 eval)
+                    enterBindingsWithValues(nativeCtx, kvs)
+                    return@withUse try {
+                        callEvalUserScript(nativeCtx, jsStr)
+                    } finally {
+                        // 退出子 scope: 弹栈 bindings (即使中途异常也要弹栈)
+                        evalInternal(nativeCtx, "__exitBindings()", "<exitBindings>", checkException = false)
+                        // 释放本次注入新增的 handle (防共享 topScope 长期膨胀)
+                        releaseNewHandles(nativeScope, handleSnapshot)
+                    }
                 } finally {
-                    // 退出子 scope: 弹栈 bindings (即使中途异常也要弹栈)
-                    evalInternal(nativeCtx, "__exitBindings()", "<exitBindings>", checkException = false)
-                    // 释放本次注入新增的 handle (防共享 topScope 长期膨胀)
-                    releaseNewHandles(nativeScope, handleSnapshot)
+                    // 释放 kvs 转换的 JSValue 引用 (JS_Call 不转移 argv 所有权, JS 侧已持有引用)
+                    for ((_, v) in kvs) JS_FreeValue(nativeCtx, v)
                 }
             } finally {
-                // 释放 kvs 转换的 JSValue 引用 (JS_Call 不转移 argv 所有权, JS 侧已持有引用)
-                for ((_, v) in kvs) JS_FreeValue(nativeCtx, v)
+                nativeScope.recursiveCount--
+                nativeScope.coroutineContext = null
+                threadLocalScope = prevScope
             }
-        } finally {
-            nativeScope.recursiveCount--
-            nativeScope.coroutineContext = null
-            threadLocalScope.value = prevScope
         }
     }
 
@@ -515,30 +518,32 @@ object NativeJsEngine : JsEngine {
     override fun injectBindings(scope: JsScope, bindings: JsBindings): List<String> {
         val nativeScope = scope as? NativeJsScope
             ?: error("NativeJsEngine.injectBindings requires NativeJsScope, got ${scope::class}")
-        nativeScope.dangerousApi = bindings.dangerousApi
-        val injectedKeys = mutableListOf<String>()
-        val prevScope = threadLocalScope.value
-        threadLocalScope.value = nativeScope
-        val ctx = nativeScope.ctx!!
-        try {
-            val global = JS_GetGlobalObject(ctx)
+        return nativeScope.withUse {
+            nativeScope.dangerousApi = bindings.dangerousApi
+            val injectedKeys = mutableListOf<String>()
+            val prevScope = threadLocalScope
+            threadLocalScope = nativeScope
+            val ctx = nativeScope.ctx!!
             try {
-                memScoped {
-                    for ((key, value) in bindings) {
-                        if (!isValidVarName(key)) continue
-                        val jsValue = toJsValue(ctx, value) ?: continue
-                        // JS_SetPropertyStr 转移 jsValue 所有权, 不需要 JS_FreeValue(jsValue)
-                        JS_SetPropertyStr(ctx, global, key, jsValue)
-                        injectedKeys.add(key)
+                val global = JS_GetGlobalObject(ctx)
+                try {
+                    memScoped {
+                        for ((key, value) in bindings) {
+                            if (!isValidVarName(key)) continue
+                            val jsValue = toJsValue(ctx, value) ?: continue
+                            // JS_SetPropertyStr 转移 jsValue 所有权, 不需要 JS_FreeValue(jsValue)
+                            JS_SetPropertyStr(ctx, global, key, jsValue)
+                            injectedKeys.add(key)
+                        }
                     }
+                } finally {
+                    JS_FreeValue(ctx, global)
                 }
             } finally {
-                JS_FreeValue(ctx, global)
+                threadLocalScope = prevScope
             }
-        } finally {
-            threadLocalScope.value = prevScope
+            injectedKeys
         }
-        return injectedKeys
     }
 
     /**
@@ -561,7 +566,7 @@ object NativeJsEngine : JsEngine {
                 append("]}catch(e){};")
             }
         }
-        evalInternal(nativeScope.ctx!!, js, "<cleanupBindings>", checkException = false)
+        nativeScope.withUse { evalInternal(nativeScope.ctx!!, js, "<cleanupBindings>", checkException = false) }
     }
 
     // ============ 双判谓词 (native 端具体类型自报) ============
@@ -580,14 +585,14 @@ object NativeJsEngine : JsEngine {
 
     /** 当前线程的 JS 执行上下文 (可空), 包装为 [NativeJsScope]。 */
     override fun currentContext(): JsScope? =
-        threadLocalScope.value?.let { NativeJsScope(it.rt, it.ctx) }
+        threadLocalScope
 
     /** 当前线程的 JS 执行上下文 (非空), 无上下文时抛 [IllegalStateException]。 */
     override fun currentContextNonNull(): JsScope =
-        threadLocalScope.value ?: error("No NativeJsScope on current thread")
+        threadLocalScope ?: error("No NativeJsScope on current thread")
 
     /** 当前线程的 JS scope (可空), 供桥接层 (NativeJsPropertyBridge) 登记嵌套 handle。 */
-    internal fun currentScope(): NativeJsScope? = threadLocalScope.value
+    internal fun currentScope(): NativeJsScope? = threadLocalScope
 
     /**
      * 在当前 JS 执行上下文上设 coroutineContext 后执行 block (不创建新 scope)。
@@ -595,7 +600,7 @@ object NativeJsEngine : JsEngine {
      * 对应 quickjs 的 runScriptWithContext(context, block)。
      */
     override fun <T> runScriptWithContext(context: CoroutineContext, block: () -> T): T {
-        val scope = threadLocalScope.value
+        val scope = threadLocalScope
         val prevCtx = scope?.coroutineContext
         if (scope != null) scope.coroutineContext = context
         return try {
@@ -611,7 +616,7 @@ object NativeJsEngine : JsEngine {
      * minusKey(ContinuationInterceptor) 不把调度器存进 scope (与 JVM 端实现一致)。
      */
     override suspend fun <T> runScriptWithContext(block: () -> T): T {
-        val scope = threadLocalScope.value
+        val scope = threadLocalScope
         val prevCtx = scope?.coroutineContext
         scope?.coroutineContext = coroutineContext.minusKey(ContinuationInterceptor)
         return try {
@@ -1010,27 +1015,27 @@ object NativeJsEngine : JsEngine {
             is JsExtensionsCommon -> {
                 // JsExtensions 桥接: 通过 handle 表 + JS 工厂函数桥接为 JS 对象 (NativeJsExtensionsBridge)
                 // 需要当前 scope (threadLocalScope) 记录 handle, close 时清理
-                val currentScope = threadLocalScope.value
+                val currentScope = threadLocalScope
                     ?: return null  // 无 scope 上下文, 跳过 (非 injectBindings 调用路径)
                 NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
             }
             is BookLike, is BookChapterLike -> {
                 // 复杂对象 (book/chapter) 桥接: 复用 handle 表 + 属性 getter 工厂
                 // (NativeJsPropertyBridge, propertyId 1700+); 放在 JsExtensionsCommon 之后保持原通路顺序
-                val currentScope = threadLocalScope.value
+                val currentScope = threadLocalScope
                     ?: return null  // 无 scope 上下文, 跳过 (非 injectBindings 调用路径)
                 NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
             }
             is SourceNetworkProvider, is SourceCacheProvider -> {
                 // cookie/cache binding: 复用 createJsObject 工厂映射表 (__createCookieObj/__createCacheObj),
                 // 不重复写工厂判断; 与上方复杂对象分支同型 (handle 表 + scope 记录)
-                val currentScope = threadLocalScope.value
+                val currentScope = threadLocalScope
                     ?: return null  // 无 scope 上下文, 跳过 (非 injectBindings 调用路径)
                 NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
             }
             is Node -> {
                 // ksoup 节点 (src binding 逐项循环场景): 同 book/chapter 的 handle 表 + 属性工厂
-                val currentScope = threadLocalScope.value
+                val currentScope = threadLocalScope
                     ?: return null  // 无 scope 上下文, 跳过 (非 injectBindings 调用路径)
                 NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
             }
@@ -1259,13 +1264,13 @@ object NativeJsEngine : JsEngine {
      * 在指定 scope 上执行 block, 处理 ThreadLocal / 递归检查 / coroutineContext 同步。
      * 对应 quickjs/iOS/鸿蒙的 withEvalContext (公共模板)。
      */
-    private inline fun <T> withEvalContext(
+    private fun <T> withEvalContext(
         scope: NativeJsScope,
         coroutineContext: CoroutineContext?,
-        crossinline block: () -> T
-    ): T {
-        val prevScope = threadLocalScope.value
-        threadLocalScope.value = scope
+        block: () -> T
+    ): T = scope.withUse {
+        val prevScope = threadLocalScope
+        threadLocalScope = scope
         val prevCoroutineContext = scope.coroutineContext
         val prevAllowScriptRun = scope.allowScriptRun
         if (coroutineContext != null) {
@@ -1273,14 +1278,14 @@ object NativeJsEngine : JsEngine {
         }
         scope.allowScriptRun = true
         scope.recursiveCount++
-        return try {
+        try {
             scope.checkRecursive()
             block()
         } finally {
             scope.coroutineContext = prevCoroutineContext
             scope.allowScriptRun = prevAllowScriptRun
             scope.recursiveCount--
-            threadLocalScope.value = prevScope
+            threadLocalScope = prevScope
         }
     }
 
@@ -1475,12 +1480,20 @@ function __wrapJavaHandle(handle) {
  */
 class NativeJsScope(
     /** quickjs JSRuntime 指针 (CPointer<JSRuntime>), 由 JS_NewRuntime 创建。null = 已 close。 */
-    val rt: CPointer<JSRuntime>?,
+    rt: CPointer<JSRuntime>?,
     /** quickjs JSContext 指针 (CPointer<JSContext>), 由 JS_NewContext 创建。null = 已 close。 */
-    val ctx: CPointer<JSContext>?,
+    ctx: CPointer<JSContext>?,
     /** native 上 dangerousApi 语义为 no-op (无 Java 反射可旁路), 保留字段仅为接口对齐 */
     var dangerousApi: Boolean = false
 ) : JsScope {
+    var rt: CPointer<JSRuntime>? = rt
+        private set
+    var ctx: CPointer<JSContext>? = ctx
+        private set
+    private val useLock = SynchronizedObject()
+    private val lifetime = DeferredClose { releaseResources() }
+    internal fun <T> withUse(block: () -> T): T = synchronized(useLock) { lifetime.use(block) }
+
 
     override var coroutineContext: CoroutineContext? = null
     override var allowScriptRun: Boolean = false
@@ -1517,9 +1530,13 @@ class NativeJsScope(
      * 幂等: 多次调用安全 (rt/ctx 释放后置 null, 后续调用 no-op)。
      * 保留 close() 实现为满足 AutoCloseable 接口 + 业务层 try-finally 模式。
      */
-    override fun close() {
+    override fun close() = synchronized(useLock) { lifetime.close() }
+
+    private fun releaseResources() {
         val localCtx = ctx
         val localRt = rt
+        ctx = null
+        rt = null
         if (localCtx != null) {
             JS_FreeContext(localCtx)
         }
@@ -1531,8 +1548,6 @@ class NativeJsScope(
             NativeJsExtensionsBridge.unregisterObject(handle)
         }
         handles.clear()
-        // 注: rt/ctx 是 val 不能置 null, 但 close 后不应再使用;
-        // evalInternal 等方法用 ctx!! 强制非空, close 后调用会 NPE (符合预期, 调用方应避免)
     }
 
     private companion object {

@@ -1,14 +1,8 @@
 name: iOS Remote
 
-# 交互式远程会话: 模拟器装好 app 后开原生屏幕共享, websockify 把 VNC 包成网页
-# (noVNC), Cloudflare Quick Tunnel 打出去, 人在 Windows 上浏览器直接打开页面操作
-# (远程点点点), 无需装任何客户端。
-# 应用包: 取 multiplatform-test Release 的 legado-*-ios-simulator.zip (由 ios.yml
-# stage=simulator 产出并发布); 触发本 workflow 前必须先发包, 否则拉取直接报错退出。
-# 用途边界: 调试本仓库自己的 iOS 应用 (GitHub Actions 条款允许的开发/测试用途,
-# 单一许可用户访问); 会话时长由触发参数限定, 用完 Cancel 即回收。
-# 安全: VNC 密码固定 12345678 且明写在本文件 —— public 仓库任何人都能读到,
-# 只用于这种用完即弃的调试会话。
+# Private debugging only: VNC is forwarded to a gateway's LOOPBACK interface over SSH.
+# Required repository secrets and operator connection steps: scripts/security-tests/README.md.
+# No public Quick Tunnel, fixed password, or connection credentials in logs/summaries.
 on:
   workflow_dispatch:
     inputs:
@@ -32,6 +26,22 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      - name: Validate private access configuration
+        env:
+          VNC_PASSWORD: ${{ secrets.IOS_REMOTE_VNC_PASSWORD }}
+          SSH_HOST: ${{ secrets.IOS_REMOTE_SSH_HOST }}
+          SSH_USER: ${{ secrets.IOS_REMOTE_SSH_USER }}
+          SSH_KEY: ${{ secrets.IOS_REMOTE_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.IOS_REMOTE_SSH_KNOWN_HOSTS }}
+        run: |
+          set -eu
+          # Legacy VNC uses only eight bytes. Require an independently generated secret.
+          [ "${#VNC_PASSWORD}" -eq 8 ] && [ "$VNC_PASSWORD" != "12345678" ] || {
+            echo "::error::Configure an eight-character random IOS_REMOTE_VNC_PASSWORD secret"; exit 1;
+          }
+          [ -n "$SSH_HOST" ] && [ -n "$SSH_USER" ] && [ -n "$SSH_KEY" ] && [ -n "$SSH_KNOWN_HOSTS" ] || {
+            echo "::error::Private SSH gateway secrets are required"; exit 1;
+          }
       # 屏幕共享只在 console 用户的 GUI 会话里能注入键鼠: 会话停在 loginwindow 或已
       # 锁屏时 VNC 看得到画面却点不动, 而 hosted runner 上无法在 job 内恢复 (解锁需
       # 账号密码, 重启 GUI 会话会连 runner 一起杀掉), 故直接失败退出。
@@ -109,6 +119,8 @@ jobs:
       # 具名列 INSERT: access 表在 macOS 14+ 增了 pid/pid_version/boot_uuid/last_reminded,
       # 位置式 VALUES 会随列数变化写错列。
       - name: Enable Screen Sharing
+        env:
+          VNC_PASSWORD: ${{ secrets.IOS_REMOTE_VNC_PASSWORD }}
         run: |
           set -o pipefail
           DB="/Library/Application Support/com.apple.TCC/TCC.db"
@@ -129,12 +141,12 @@ jobs:
           sudo dscl . -create /Users/vncuser UserShell /bin/bash
           sudo dscl . -create /Users/vncuser RealName "VNC User"
           sudo dscl . -create /Users/vncuser UniqueID 1001
-          sudo dscl . -create /Users/vncuser PrimaryGroupID 80
+          sudo dscl . -create /Users/vncuser PrimaryGroupID 20
           sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
-          sudo dscl . -passwd /Users/vncuser "12345678"
+          sudo dscl . -passwd /Users/vncuser "$VNC_PASSWORD"
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate -configure -allowAccessFor -allUsers -privs -all \
-            -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "12345678" \
+            -activate -configure -allowAccessFor -specifiedUsers -users vncuser -privs -all \
+            -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD" \
             -restart -agent -console
 
           for _ in $(seq 1 15); do
@@ -152,73 +164,39 @@ jobs:
             exit 1
           fi
 
-      # 隧道守护与保活合一: cloudflared 崩溃自动重启, 新域名实时打到本步骤日志(网页实时可见)
-      - name: Start noVNC, Tunnel & Keep Alive
+      - name: Private SSH tunnel and session lifetime
+        env:
+          SSH_HOST: ${{ secrets.IOS_REMOTE_SSH_HOST }}
+          SSH_USER: ${{ secrets.IOS_REMOTE_SSH_USER }}
+          SSH_KEY: ${{ secrets.IOS_REMOTE_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.IOS_REMOTE_SSH_KNOWN_HOSTS }}
+          DURATION_HOURS: ${{ inputs.duration_hours }}
         run: |
-          set -o pipefail
-          git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/noVNC
-          if [ ! -f /tmp/noVNC/vnc.html ]; then
-            echo "::error::noVNC 克隆失败, 缺 vnc.html"
-            exit 1
-          fi
-          # noVNC 支持 Apple 的 ARD 认证(安全类型 30), 按服务器广播顺序会优先选中它并索要
-          # 用户名; 本会话只配了单密码认证, 从客户端能力列表里摘掉 ARD
-          sed -i '' '/securityTypeARD,/d' /tmp/noVNC/core/rfb.js
-          if grep -q "securityTypeARD," /tmp/noVNC/core/rfb.js; then
-            echo "::error::noVNC 的 ARD 认证未被屏蔽, 连接会索要用户名"
-            exit 1
-          fi
-
-          pipx install websockify
-          WSK="$(command -v websockify || echo "$HOME/.local/bin/websockify")"
-          if [ ! -x "$WSK" ]; then
-            echo "::error::websockify 安装失败"
-            exit 1
-          fi
-          nohup "$WSK" --web /tmp/noVNC 6080 127.0.0.1:5900 > /tmp/websockify.log 2>&1 &
-          for _ in $(seq 1 15); do
-            curl -sf -o /dev/null "http://127.0.0.1:6080/vnc.html" && break
-            sleep 2
-          done
-          if ! curl -sf -o /dev/null "http://127.0.0.1:6080/vnc.html"; then
-            echo "::error::noVNC 未在 6080 就绪"
-            cat /tmp/websockify.log
-            exit 1
-          fi
-
-          brew install cloudflared
-          END=$(( $(date +%s) + ${{ inputs.duration_hours }} * 3600 ))
-          TUNNEL_OK=0
+          set -eu
+          umask 077
+          SSH_DIR="$(mktemp -d)"
+          cleanup() {
+            [ -z "${SSH_PID:-}" ] || kill "$SSH_PID" 2>/dev/null || true
+            rm -rf "$SSH_DIR"
+          }
+          trap cleanup EXIT INT TERM
+          printf '%s\n' "$SSH_KEY" > "$SSH_DIR/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$SSH_DIR/known_hosts"
+          # Gateway must enforce GatewayPorts=no and restrict this key to loopback port 15900.
+          ssh -N -T -i "$SSH_DIR/key" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts" \
+            -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            -R 127.0.0.1:15900:127.0.0.1:5900 "$SSH_USER@$SSH_HOST" > "$SSH_DIR/tunnel.log" 2>&1 &
+          SSH_PID=$!
+          END=$(( $(date +%s) + DURATION_HOURS * 3600 ))
           while [ "$(date +%s)" -lt "$END" ]; do
-            if ! pgrep -f "cloudflared tunnel" > /dev/null; then
-              nohup cloudflared tunnel --protocol http2 --url http://127.0.0.1:6080 > /tmp/cf.log 2>&1 &
-              URL=""
-              for _ in $(seq 1 30); do
-                URL="$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1 || true)"
-                [ -n "$URL" ] && break
-                sleep 1
-              done
-              if [ -z "$URL" ]; then
-                cat /tmp/cf.log
-                # 首次就没隧道域名: 再等下去只会白占几小时 runner, 直接失败
-                if [ "$TUNNEL_OK" = "0" ]; then
-                  echo "::error::cloudflared 未取得隧道域名"
-                  exit 1
-                fi
-                echo "::error::cloudflared 重连未取得隧道域名"
-              else
-                TUNNEL_OK=1
-                # 密码不入 URL: GitHub 对 password= 参数打码致复制失效; resize=scale 根治画面不缩放
-                echo "直连网址: $URL/vnc.html?autoconnect=true&resize=scale (VNC 密码 12345678)"
-                {
-                  echo "### 直连网址"
-                  echo ""
-                  echo "- 网页: $URL/vnc.html?autoconnect=true&resize=scale"
-                  echo "- VNC 密码: 12345678"
-                  echo "- 会话截止: $(date -r "$END" '+%Y-%m-%d %H:%M:%S %Z')"
-                  echo ""
-                } >> "$GITHUB_STEP_SUMMARY"
-              fi
-            fi
+            kill -0 "$SSH_PID" 2>/dev/null || { echo "::error::Private SSH tunnel stopped"; exit 1; }
             sleep 20
           done
+
+      - name: Stop screen sharing
+        if: always()
+        run: |
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -deactivate -stop || true
+          sudo dscl . -delete /Users/vncuser || true

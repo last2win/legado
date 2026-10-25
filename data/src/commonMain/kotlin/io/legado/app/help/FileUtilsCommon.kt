@@ -23,6 +23,9 @@ import io.legado.app.utils.InputStream
  * 模式参考 [JsExtensionsPlatform] / [io.legado.app.utils.FileUtilsBase]。
  */
 expect object FileUtilsCommon {
+    /** Resolve an untrusted script path under its private source directory; reject symlinks. */
+    fun resolveSourcePath(sourceKey: String?, relativePath: String): String
+
 
     /**
      * 缓存目录绝对路径。

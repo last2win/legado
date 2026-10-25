@@ -76,6 +76,11 @@ private suspend fun handleWsSession(
     wsSession: WebSocketServerSession,
     handlerFactory: (WsSession) -> WsHandler,
 ) {
+    val headers = wsSession.call.request.headers.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
+    if (!io.legado.app.web.api.WebAccess.authorized(headers, webSocket = true)) {
+        wsSession.close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Authentication required"))
+        return
+    }
     // 拉起 Service 续命 (app 端) / no-op (鸿蒙端), 对齐 NanoWSD WebSocketServer.openWebSocket
     WebServerManager.serve()
     val ktorSession = KtorWsSession(wsSession)

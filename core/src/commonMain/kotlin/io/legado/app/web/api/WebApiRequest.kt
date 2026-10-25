@@ -7,6 +7,8 @@ package io.legado.app.web.api
  * 下沉 commonMain: 仅纯 Kotlin 数据类, 无任何平台依赖, 消费方 import 不变。
  */
 data class WebApiRequest(
+    /** Only Android's permission-checked in-process ContentProvider may set this. Never deserialize from HTTP. */
+    val trustedLocalCall: Boolean = false,
     /** "GET" / "POST" / "OPTIONS" 等，取原生 method 名 */
     val method: String,
     /** 请求路径, 即 uri */

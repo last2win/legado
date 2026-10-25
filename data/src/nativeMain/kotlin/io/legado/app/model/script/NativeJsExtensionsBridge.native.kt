@@ -186,7 +186,7 @@ object NativeJsExtensionsBridge {
 
     /** 取 Kotlin 对象 */
     fun getObject(handle: Long): Any? = synchronized(handleTableLock) {
-        handleTable[handle]
+        if (NativeJsEngine.currentScope()?.handles?.contains(handle) == true) handleTable[handle] else null
     }
 
     /** 注销 handle (scope close 时调用) */
@@ -492,9 +492,7 @@ object NativeJsExtensionsBridge {
             }
 
             obj is AnalyzeRuleCore && methodId == 35 -> {
-                // close() → undefined (释放 topScope, 与 JVM 端一致无返回值)
-                obj.close()
-                jsUndefined()
+                throw IllegalStateException("Runtime lifecycle is not accessible to scripts")
             }
 
             // ============ JsCryptoProviders 摘要/HMAC 面 (100-199) ============
@@ -1003,7 +1001,6 @@ function __createJavaObj(handle) {
     obj.setBaseUrl = function(baseUrl) { return __createAnalyzeObj(__nativeDispatch(handle, 32, [baseUrl])); };
     obj.setRedirectUrl = function(url) { return __nativeDispatch(handle, 33, [url]); };
     obj.splitSourceRule = function(rule, allInOne) { return __nativeDispatch(handle, 34, [rule, allInOne]); };
-    obj.close = function() { return __nativeDispatch(handle, 35, []); };
     // ============ 网络族 (300-399) ============
     obj.ajax = function(url) { return __nativeDispatch(handle, 301, [url]); };
     obj.ajaxAll = function(urlList) {

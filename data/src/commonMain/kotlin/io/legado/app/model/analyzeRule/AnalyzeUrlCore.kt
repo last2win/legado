@@ -273,8 +273,8 @@ open class AnalyzeUrlCore(
             // 响应阶段(loginCheckJs/请求头 JS)需要"当前请求 URL"，所以优先用 url；
             // 但 {{...}} 模板求值发生在 analyzeUrl() 之前，此时 url 还是空，降级用构造器传入的 baseUrl
             bindings["baseUrl"] = url.ifEmpty { baseUrl }
-            bindings["cookie"] = SourceNetworkProviders.impl?.asBinding()
-            bindings["cache"] = SourceCacheProviders.impl?.asBinding()
+            bindings["cookie"] = io.legado.app.help.source.ScopedSourceNetwork(source?.getKey())
+            bindings["cache"] = source?.getKey()?.let { key -> SourceCacheProviders.impl?.let { io.legado.app.help.source.ScopedSourceCache(key, it) } }
             bindings["book"] = ruleData as? BookLike
             bindings["chapter"] = chapter
             bindings["source"] = source
@@ -509,7 +509,12 @@ open class AnalyzeUrlCore(
      * urlOption临时cookie > 数据库cookie
      */
     protected fun setCookie() {
-        val cookie = SourceNetworkProviders.impl?.getCookie(domain) ?: ""
+        if (io.legado.app.help.http.CookieStoreProviders.get() is io.legado.app.help.http.StructuredCookieStore) {
+            headerMap.keys.removeAll { it.equals(io.legado.app.help.http.cookieScopeHeader, true) }
+            source?.getKey()?.let { headerMap[io.legado.app.help.http.cookieScopeHeader] = it }
+        }
+        val cookie = io.legado.app.help.http.CookieStoreProviders.get()
+            ?.getCookieForSource(source?.getKey(), urlNoQuery) ?: ""
         if (cookie.isNotEmpty()) {
             mergeCookies(cookie, headerMap["Cookie"])?.let { headerMap["Cookie"] = it }
         }

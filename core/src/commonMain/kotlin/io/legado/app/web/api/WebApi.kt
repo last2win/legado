@@ -17,6 +17,9 @@ import io.legado.app.utils.toInputStream
 object WebApi {
 
     suspend fun handle(request: WebApiRequest): WebApiResponse {
+        if (!request.trustedLocalCall && !WebAccess.isPublicAsset(request.method, request.path) &&
+            !WebAccess.authorized(request.headers)) return accessResponse(false)
+        if (request.path == "/__session") return accessResponse(request.method == "POST")
         if (request.path == "/mediaStream") {
             return mediaStreamGone(request.method)
         }
@@ -43,6 +46,17 @@ object WebApi {
         } else {
             WebApiResponse.Json(returnData)
         }
+    }
+
+    fun accessResponse(allowed: Boolean): WebApiResponse.Stream {
+        val body = (if (allowed) "Authenticated" else "Authentication required").encodeToByteArray()
+        return WebApiResponse.Stream(
+            inputStream = body.toInputStream(), contentType = "text/plain; charset=utf-8",
+            contentLength = body.size.toLong(), statusCode = if (allowed) 200 else 401,
+            statusMessage = if (allowed) "OK" else "Unauthorized",
+            headers = mapOf("Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff") +
+                if (allowed) mapOf("Set-Cookie" to WebAccess.sessionCookie()) else emptyMap(),
+        )
     }
 
     private suspend fun handlePost(request: WebApiRequest): ReturnData? {

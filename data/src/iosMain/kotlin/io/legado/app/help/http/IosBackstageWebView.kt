@@ -27,10 +27,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSError
 import platform.Foundation.NSHTTPCookie
-import platform.Foundation.NSHTTPCookieDomain
-import platform.Foundation.NSHTTPCookieName
-import platform.Foundation.NSHTTPCookiePath
-import platform.Foundation.NSHTTPCookieValue
 import platform.Foundation.NSMutableURLRequest
 import platform.Foundation.NSURL
 import platform.Foundation.setValue
@@ -41,6 +37,7 @@ import platform.WebKit.WKNavigationDelegateProtocol
 import platform.WebKit.WKUserScript
 import platform.WebKit.WKUserScriptInjectionTime
 import platform.WebKit.WKWebView
+import platform.WebKit.WKWebsiteDataStore
 import platform.WebKit.WKWebViewConfiguration
 import platform.darwin.NSObject
 import platform.darwin.dispatch_async
@@ -150,11 +147,9 @@ private class IosBackstageWebViewHandle(
     private var hitUrl: String? = null
 
     override suspend fun getStrResponse(): StrResponse {
-        // cookie 读取会走 DB (SharedCookieStore 内部 runBlocking), 必须在切主线程之前做完
-        val pendingCookie = readStoredCookie()
         return withTimeout(AppConst.timeLimit) {
             try {
-                withContext(Dispatchers.Main) { load(pendingCookie) }
+                withContext(Dispatchers.Main) { load() }
             } finally {
                 // 超时/取消/异常都要停加载并断 delegate (对照原版 invokeOnCancellation { destroy() })
                 dispatch_async(dispatch_get_main_queue()) { destroy() }
@@ -162,15 +157,9 @@ private class IosBackstageWebViewHandle(
         }
     }
 
-    private suspend fun readStoredCookie(): String? = withContext(IoDispatcher) {
-        val target = url?.takeIf { it.startsWith("http") } ?: return@withContext null
-        runCatching { CookieStoreProviders.get()?.getCookie(target) }
-            .getOrNull()?.takeIf { it.isNotBlank() }
-    }
-
-    private suspend fun load(pendingCookie: String?): StrResponse {
+    private suspend fun load(): StrResponse {
         val webView = createWebView()
-        injectCookies(webView, pendingCookie)
+        injectCookies(webView)
         start(webView)
         // sourceRegex / overrideUrlRegex 任一非空都走嗅探 (前者靠 JS hook + 轮询, 后者靠导航命中)
         return if (overrideUrlRegex.isNullOrBlank() && sourceRegex.isNullOrBlank()) {
@@ -181,9 +170,10 @@ private class IosBackstageWebViewHandle(
     }
 
     private fun createWebView(): WKWebView {
-        // 默认 websiteDataStore 即 defaultDataStore(): cookie/localStorage 与前台 IosWebViewSlot
-        // 共用一份持久存储, 对齐安卓全局 CookieManager
-        val configuration = WKWebViewConfiguration()
+        // A private store per browser instance; seed only this source's matching cookies.
+        val configuration = WKWebViewConfiguration().apply {
+            websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore()
+        }
         // sourceRegex 需要"文档开始前"注入 hook (改写页面发起请求的入口并记录到页面全局),
         // 故建 WebView 时挂用户脚本 (安卓等平台靠宿主子资源回调, 无此步);
         // 脚本与桌面 macOS 端共用一份 [WebViewSnifferScripts]
@@ -224,7 +214,7 @@ private class IosBackstageWebViewHandle(
                 val nsUrl = NSURL.URLWithString(urlStr.canonicalizeUri())
                     ?: throw NoStackTraceException("url解析失败: $urlStr")
                 val request = NSMutableURLRequest(uRL = nsUrl)
-                headerMap?.forEach { (name, value) ->
+                headerMap?.filterKeys { !it.equals(cookieScopeHeader, true) }?.forEach { (name, value) ->
                     request.setValue(value, forHTTPHeaderField = name)
                 }
                 webView.loadRequest(request)
@@ -335,19 +325,10 @@ private class IosBackstageWebViewHandle(
         }
 
     /** 加载前把业务层 cookie 注入 WKHTTPCookieStore, 替代安卓全局 CookieManager 的隐式共享。 */
-    private suspend fun injectCookies(webView: WKWebView, cookie: String?) {
-        if (cookie.isNullOrBlank()) return
-        val host = url?.let { NSURL.URLWithString(it.canonicalizeUri()) }?.host ?: return
+    private suspend fun injectCookies(webView: WKWebView) {
+        val target = url ?: return
         val store = webView.configuration.websiteDataStore.httpCookieStore
-        cookieToMap(cookie).forEach { (name, value) ->
-            val properties = mapOf<Any?, Any?>(
-                NSHTTPCookieName to name,
-                NSHTTPCookieValue to value,
-                NSHTTPCookieDomain to host,
-                NSHTTPCookiePath to "/",
-            )
-            val nsCookie = NSHTTPCookie.cookieWithProperties(properties) ?: return@forEach
-            // setCookie 是异步的, 必须等它落库再 loadRequest
+        IosCookieStore.cookiesForSource(tag, target).forEach { nsCookie ->
             suspendCancellableCoroutine<Unit> { block ->
                 store.setCookie(nsCookie) { if (block.isActive) block.resume(Unit) }
             }
@@ -356,26 +337,10 @@ private class IosBackstageWebViewHandle(
 
     /** 对应 app 端 setCookie(url): 仅在有 tag 时保存, 且存到 tag (书源 key) 名下而非页面地址。 */
     private fun harvestCookies(webView: WKWebView) {
-        val cookieTag = tag?.takeIf { it.isNotBlank() } ?: return
-        val host = webView.URL?.host ?: return
+        val pageUrl = webView.URL?.absoluteString ?: return
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { all ->
-            val cookie = all.orEmpty()
-                .filterIsInstance<NSHTTPCookie>()
-                .filter { matchesHost(host, it.domain) }
-                .joinToString("; ") { "${it.name}=${it.value}" }
-            if (cookie.isNotBlank()) {
-                cookieScope.launch {
-                    runCatching { CookieStoreProviders.get()?.setCookie(cookieTag, cookie) }
-                        .onFailure { AppLog.put("iOS后台WebView cookie回写失败", it) }
-                }
-            }
+            IosCookieStore.syncFromWebView(tag, pageUrl, all.orEmpty().filterIsInstance<NSHTTPCookie>())
         }
-    }
-
-    /** getAllCookies 返回整个 dataStore 的 cookie, 按页面 host 过滤 (对齐 CookieManager.getCookie(url))。 */
-    private fun matchesHost(host: String, domain: String): Boolean {
-        val bare = domain.removePrefix(".")
-        return host == bare || host.endsWith(".$bare")
     }
 
     private fun destroy() {

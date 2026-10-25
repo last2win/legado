@@ -210,14 +210,14 @@ interface BaseSource : JsExtensionsCommon {
         val headerMap = decodeStringMapOrNull(header)
         val cookie = headerMap?.get("Cookie") ?: headerMap?.get("cookie")
         cookie?.let {
-            SourceNetworkProviders.impl?.replaceCookie(getKey(), it)
+            io.legado.app.help.http.CookieStoreProviders.get()?.replaceCookieForSource(getKey(), getKey(), it)
         }
         SourceCacheProviders.impl?.put("loginHeader_${getKey()}", header)
     }
 
     fun removeLoginHeader() {
         SourceCacheProviders.impl?.delete("loginHeader_${getKey()}")
-        SourceNetworkProviders.impl?.removeCookie(getKey())
+        io.legado.app.help.http.CookieStoreProviders.get()?.removeCookieForSource(getKey(), getKey())
     }
 
     /**
@@ -306,8 +306,8 @@ interface BaseSource : JsExtensionsCommon {
             bindings["java"] = this
             bindings["source"] = this
             bindings["baseUrl"] = getKey()
-            bindings["cookie"] = SourceNetworkProviders.impl?.asBinding()
-            bindings["cache"] = SourceCacheProviders.impl?.asBinding()
+            bindings["cookie"] = io.legado.app.help.source.ScopedSourceNetwork(getKey())
+            bindings["cache"] = SourceCacheProviders.impl?.let { io.legado.app.help.source.ScopedSourceCache(getKey(), it) }
             bindings.apply(bindingsConfig)
             bindings.dangerousApi = enableDangerousApi == true
         }

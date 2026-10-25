@@ -13,12 +13,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
-import java.security.SecureRandom
-import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 /**
  * TVBox 壳网络门面: 静态 API 面逐字对齐 FongMi catvod 模块的 net.OkHttp
@@ -221,31 +216,13 @@ object OkHttp {
             .readTimeout(TIMEOUT, TimeUnit.MILLISECONDS)
             .writeTimeout(TIMEOUT, TimeUnit.MILLISECONDS)
             .dns(dns())
-            .hostnameVerifier { _, _ -> true }
-            .sslSocketFactory(getSSLContext().socketFactory, trustAllCertificates())
             .followRedirects(false)
         builder.proxyAuthenticator(authenticator())
         builder.proxySelector(selector)
         return builder
     }
 
-    private fun getSSLContext(): SSLContext = try {
-        SSLContext.getInstance("TLS").apply {
-            init(null, arrayOf<TrustManager>(trustAllCertificates()), SecureRandom())
-        }
-    } catch (e: Throwable) {
-        throw IllegalStateException(e)
-    }
 
-    private fun trustAllCertificates(): X509TrustManager = object : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {
-        }
-
-        override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {
-        }
-
-        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
-    }
 
     fun clear() {
         cancelAll()

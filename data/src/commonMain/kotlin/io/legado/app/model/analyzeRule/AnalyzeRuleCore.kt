@@ -878,8 +878,8 @@ open class AnalyzeRuleCore(
         val bindings = buildScriptBindings { bindings ->
             variables?.forEach { (k, v) -> bindings[k.key] = v }
             bindings["java"] = this
-            bindings["cookie"] = SourceNetworkProviders.impl?.asBinding()
-            bindings["cache"] = SourceCacheProviders.impl?.asBinding()
+            bindings["cookie"] = io.legado.app.help.source.ScopedSourceNetwork(source?.getKey())
+            bindings["cache"] = source?.getKey()?.let { key -> SourceCacheProviders.impl?.let { io.legado.app.help.source.ScopedSourceCache(key, it) } }
             bindings["source"] = source
             bindings["book"] = ruleData as? BookLike
             bindings["result"] = result

@@ -491,10 +491,7 @@ object NativeJsPropertyBridge {
         methodId == 2816 -> (obj as? BookChapter)?.let { b -> b.titleMD5 = toNullableString(args.getOrNull(0)); jsUndefined() }
 
         // ============ BookSource 面 (2901-2927) ============
-        methodId == 2901 -> (obj as? BookSource)?.let { b ->
-            toNullableString(args.getOrNull(0))?.let { b.bookSourceUrl = it }
-            jsUndefined()
-        }
+        methodId == 2901 -> throw IllegalStateException("Source identity cannot be changed by a script")
         methodId == 2902 -> (obj as? BookSource)?.let { b ->
             toNullableString(args.getOrNull(0))?.let { b.bookSourceName = it }
             jsUndefined()
@@ -823,7 +820,7 @@ function __createBaseSourceObj(handle) {
     Object.defineProperty(obj, "enableDangerousApi", { get: function() { return __nativeDispatch(handle, 2006, []); }, set: function(v) { __nativeDispatch(handle, 3006, [v]); } });
     Object.defineProperty(obj, "jsLib", { get: function() { return __nativeDispatch(handle, 2007, []); }, set: function(v) { __nativeDispatch(handle, 3007, [v]); } });
     // BookSource 属性 (1900-1999; 非 BookSource 的 BaseSource 取到 undefined)
-    Object.defineProperty(obj, "bookSourceUrl", { get: function() { return __nativeDispatch(handle, 1901, []); }, set: function(v) { __nativeDispatch(handle, 2901, [v]); } });
+    Object.defineProperty(obj, "bookSourceUrl", { get: function() { return __nativeDispatch(handle, 1901, []); } });
     Object.defineProperty(obj, "bookSourceName", { get: function() { return __nativeDispatch(handle, 1902, []); }, set: function(v) { __nativeDispatch(handle, 2902, [v]); } });
     Object.defineProperty(obj, "bookSourceGroup", { get: function() { return __nativeDispatch(handle, 1903, []); }, set: function(v) { __nativeDispatch(handle, 2903, [v]); } });
     Object.defineProperty(obj, "bookSourceType", { get: function() { return __nativeDispatch(handle, 1904, []); }, set: function(v) { __nativeDispatch(handle, 2904, [v]); } });

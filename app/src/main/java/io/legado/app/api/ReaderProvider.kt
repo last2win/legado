@@ -71,7 +71,7 @@ class ReaderProvider : ContentProvider() {
             )
         }
         runBlocking {
-            WebApi.handle(WebApiRequest(method = "POST", path = path, postData = selection))
+            WebApi.handle(WebApiRequest(trustedLocalCall = true, method = "POST", path = path, postData = selection))
         }
         return 0
     }
@@ -93,6 +93,7 @@ class ReaderProvider : ContentProvider() {
             values?.let {
                 WebApi.handle(
                     WebApiRequest(
+                        trustedLocalCall = true,
                         method = "POST",
                         path = path,
                         postData = it.getAsString(postBodyKey)
@@ -131,7 +132,7 @@ class ReaderProvider : ContentProvider() {
             )
         }
         val returnData = runBlocking {
-            WebApi.handle(WebApiRequest(method = "GET", path = path, query = query)).returnData
+            WebApi.handle(WebApiRequest(trustedLocalCall = true, method = "GET", path = path, query = query)).returnData
         }
         return SimpleCursor(returnData)
     }

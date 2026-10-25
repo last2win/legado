@@ -4,6 +4,8 @@ import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.exception.SecurityException
 import io.legado.app.help.FileUtilsCommon
+import io.legado.app.help.storage.ArchiveLimits
+import io.legado.app.model.script.JsEngines
 import io.legado.app.help.storage.NativeZipCodec
 import io.legado.app.help.writeBytesAtomically
 import io.legado.app.model.fileBook.RangedSource
@@ -33,6 +35,7 @@ object NativeArchiveProvider : ArchiveProvider {
     override val tempFolderName: String = "ArchiveTemp"
 
     override fun deCompress(archivePath: String): List<String> {
+        require(File(archivePath).length() <= ArchiveLimits.MAX_INPUT_BYTES) { "Archive input size limit exceeded" }
         val name = archivePath.substringAfterLast('/').substringAfterLast('\\')
         val destDir = FileUtilsCommon.getPath(
             FileUtilsCommon.getCachePath(), tempFolderName, MD5Utils.md5Encode16(name)
@@ -96,65 +99,34 @@ object NativeArchiveProvider : ArchiveProvider {
      * 以两个全零块结束。
      */
     private fun unTarToPath(tar: File, destDir: String) {
+        require(tar.length() <= ArchiveLimits.MAX_TOTAL_BYTES) { "TAR input size limit exceeded" }
         val data = tar.readBytes()
-        var pos = 0
-        while (pos + 512 <= data.size) {
-            val header = data.copyOfRange(pos, pos + 512)
-            // 全零块 = 归档结束
-            if (header.all { it == 0.toByte() }) break
-            val name = decodeTarName(header)
-            // size 字段是八进制 ASCII (POSIX ustar)
-            val size = header.copyOfRange(124, 136).trimZero().toAscii()
-                .trim().ifEmpty { "0" }.toLongOrNull(8) ?: 0L
-            // typeflag: '0'/NUL/空格 普通文件, '5' 目录, 其余 (符号链接/GNU 扩展头等) 跳过内容
-            val typeFlag = header[156].toInt() and 0xFF
-            val contentStart = pos + 512
-            val contentEnd = contentStart + size.toInt()
-            if (contentEnd > data.size) {
-                throw NoStackTraceException("tar 内容越界: $name")
-            }
-            // 路径穿越防护 (对齐 NativeZipCodec.forEachEntry)
-            if (name.contains("../") || name.startsWith("/")) {
-                throw SecurityException("tar entry path unsafe: $name")
-            }
+        TarReader.forEach(data, { JsEngines.get().currentContext()?.ensureActive() }) { name, type, start, end ->
             when {
-                typeFlag == TYPE_DIR || name.endsWith("/") ->
-                    File((destDir + "/" + name).trimEnd('/')).mkdirs()
-
-                typeFlag in REGULAR_TYPES && name.isNotEmpty() -> {
+                type == TYPE_DIR -> File((destDir + "/" + name).trimEnd('/')).mkdirs()
+                type in REGULAR_TYPES -> {
                     val target = destDir + "/" + name
                     File(target.substringBeforeLast('/')).mkdirs()
-                    File(target).writeBytes(data.copyOfRange(contentStart, contentEnd))
+                    File(target).writeBytes(data.copyOfRange(start, end))
                 }
             }
-            // 块对齐: 内容按 512 取整 (保持循环单调推进)
-            pos = contentEnd + ((512 - size % 512) % 512).toInt()
         }
-    }
-
-    /** tar 头名字: 优先 ustar 前缀字段, 否则基础 name 字段 (0..99)。 */
-    private fun decodeTarName(header: ByteArray): String {
-        val prefix = header.copyOfRange(345, 345 + 155).trimZero().toAscii()
-        val name = header.copyOfRange(0, 100).trimZero().toAscii()
-        return if (prefix.isNotEmpty()) "$prefix/$name" else name
-    }
-
-    /** ASCII 解码 (tar 头字段均为 US-ASCII, 与 UTF-8 在 0..127 等价)。 */
-    private fun ByteArray.toAscii(): String = decodeToString()
-
-    /** 去尾部 NUL 填充。 */
-    private fun ByteArray.trimZero(): ByteArray {
-        var end = size
-        while (end > 0 && this[end - 1] == 0.toByte()) end--
-        return copyOf(end)
     }
 
     /** 全量解压 gzip 字节 (okio native GzipSource, 底层 platform.zlib; 语义同 jvm GZIPInputStream)。 */
     private fun gzipDecompress(bytes: ByteArray): ByteArray {
+        require(bytes.size <= ArchiveLimits.MAX_INPUT_BYTES) { "GZIP input size limit exceeded" }
         val gz = GzipSource(Buffer().write(bytes))
         try {
             val out = Buffer()
-            while (gz.read(out, DEFAULT_CHUNK) != -1L) Unit
+            while (true) {
+                JsEngines.get().currentContext()?.ensureActive()
+                val remaining = ArchiveLimits.MAX_TOTAL_BYTES - out.size
+                val read = gz.read(out, minOf(DEFAULT_CHUNK, remaining + 1))
+                if (read == -1L) break
+                require(out.size <= ArchiveLimits.MAX_TOTAL_BYTES &&
+                    out.size <= bytes.size.toLong() * ArchiveLimits.MAX_COMPRESSION_RATIO) { "GZIP output limit exceeded" }
+            }
             return out.readByteArray()
         } finally {
             gz.close()
@@ -163,9 +135,13 @@ object NativeArchiveProvider : ArchiveProvider {
 
     override fun getByteArrayContent(bytes: ByteArray, path: String): ByteArray? {
         return runCatching {
+            require(bytes.size <= ArchiveLimits.MAX_INPUT_BYTES) { "Archive input size limit exceeded" }
             val zip = RemoteZipCore(bytesRangedSource(bytes), "bytes", bytes.size.toLong())
             try {
-                zip.ensureMeta()[path]?.let { zip.readDecompressed(it) }
+                zip.ensureMeta()[path]?.let {
+                    require(it.entry.size in 0..ArchiveLimits.MAX_ENTRY_BYTES.toLong()) { "ZIP entry size limit exceeded" }
+                    zip.readDecompressed(it)
+                }
             } finally {
                 zip.close()
             }
@@ -191,6 +167,7 @@ object NativeArchiveProvider : ArchiveProvider {
             return emptyList()
         }
         return runCatching {
+            require(file.length() <= ArchiveLimits.MAX_INPUT_BYTES) { "Archive input size limit exceeded" }
             val bytes = file.readBytes()
             val zip = RemoteZipCore(bytesRangedSource(bytes), name, bytes.size.toLong())
             try {

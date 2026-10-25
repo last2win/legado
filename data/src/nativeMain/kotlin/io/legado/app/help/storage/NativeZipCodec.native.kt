@@ -167,6 +167,7 @@ object NativeZipCodec {
      * @throws IllegalStateException zip 格式错误 / CRC 校验失败 / IO 错误
      */
     fun unZipToPath(zipPath: String, destDir: String) {
+        require(File(zipPath).length() <= ArchiveLimits.MAX_INPUT_BYTES) { "ZIP input size limit exceeded" }
         val data = File(zipPath).readBytes()
         // 确保 destDir 存在
         File(destDir).mkdirs()
@@ -203,6 +204,7 @@ object NativeZipCodec {
      * 目录 entry 回调 `data == null`, 文件 entry 回调解压并校验后的字节。
      */
     private inline fun forEachEntry(data: ByteArray, onEntry: (String, ByteArray?) -> Unit) {
+        require(data.size <= ArchiveLimits.MAX_INPUT_BYTES) { "ZIP input size limit exceeded" }
         if (data.size < EOCD_MIN_SIZE) {
             throw IllegalStateException("NativeZipCodec.unZipToPath: zip too small (${data.size} bytes)")
         }
@@ -211,10 +213,15 @@ object NativeZipCodec {
         val eocdOffset = findEocd(data)
         val cdCount = readU16LE(data, eocdOffset + 10)
         val cdOffset = readU32LE(data, eocdOffset + 16)
+        require(cdCount <= ArchiveLimits.MAX_ENTRIES) { "ZIP entry count limit exceeded" }
+        require(cdOffset >= 0 && cdOffset <= eocdOffset) { "Invalid ZIP directory offset" }
+        var totalBytes = 0L
+        val names = HashSet<String>()
 
         // 2. 遍历中央目录
         var pos = cdOffset
         for (i in 0 until cdCount) {
+            require(pos >= 0 && pos.toLong() + 46 <= eocdOffset) { "Truncated ZIP directory" }
             if (readU32LE(data, pos) != CDH_SIGNATURE) {
                 throw IllegalStateException("NativeZipCodec: invalid central directory header at $pos")
             }
@@ -226,13 +233,17 @@ object NativeZipCodec {
             val extraLen = readU16LE(data, pos + 30)
             val commentLen = readU16LE(data, pos + 32)
             val localHeaderOffset = readU32LE(data, pos + 42)
+            require(pos.toLong() + 46 + nameLen + extraLen + commentLen <= eocdOffset) { "Truncated ZIP name" }
+            require(readU16LE(data, pos + 8) and 1 == 0) { "Encrypted ZIP is unsupported" }
+            ArchiveLimits.checkEntry(compressedSize, uncompressedSize)
+            require(method != METHOD_STORED || compressedSize == uncompressedSize) { "Invalid STORED entry size" }
+            totalBytes += uncompressedSize
+            require(totalBytes <= ArchiveLimits.MAX_TOTAL_BYTES) { "ZIP total size limit exceeded" }
             val entryName = data.decodeToString(pos + 46, pos + 46 + nameLen)
             pos += 46 + nameLen + extraLen + commentLen
 
-            // 路径穿越防护 (对齐 JVM 端 canonicalPath.startsWith 检查)
-            if (entryName.contains("../") || entryName.startsWith("/")) {
-                throw SecurityException("NativeZipCodec: zip entry path unsafe: $entryName")
-            }
+            ArchiveLimits.checkPath(entryName)
+            require(names.add(entryName)) { "Duplicate ZIP entry" }
 
             // 目录 entry (以 "/" 结尾)
             if (entryName.endsWith("/")) {
@@ -241,17 +252,20 @@ object NativeZipCodec {
             }
 
             // 3. 读本地文件头获取实际数据偏移 (本地头里的 name/extra 长度可能与中央目录不同)
+            require(localHeaderOffset >= 0 && localHeaderOffset.toLong() + 30 <= cdOffset) { "Invalid ZIP local header" }
             if (readU32LE(data, localHeaderOffset) != LFH_SIGNATURE) {
                 throw IllegalStateException("NativeZipCodec: invalid local file header at $localHeaderOffset")
             }
             val localNameLen = readU16LE(data, localHeaderOffset + 26)
             val localExtraLen = readU16LE(data, localHeaderOffset + 28)
-            val dataOffset = localHeaderOffset + 30 + localNameLen + localExtraLen
+            val dataOffsetLong = localHeaderOffset.toLong() + 30 + localNameLen + localExtraLen
+            require(dataOffsetLong + compressedSize <= cdOffset) { "Truncated ZIP payload" }
+            val dataOffset = dataOffsetLong.toInt()
 
             // 4. 解压 entry 数据
             val entryData = when (method) {
                 METHOD_STORED -> data.copyOfRange(dataOffset, dataOffset + compressedSize)
-                METHOD_DEFLATE -> inflate(data, dataOffset, compressedSize)
+                METHOD_DEFLATE -> inflate(data, dataOffset, compressedSize, uncompressedSize)
                 else -> throw IllegalStateException(
                     "NativeZipCodec: unsupported compression method $method for $entryName"
                 )
@@ -289,9 +303,15 @@ object NativeZipCodec {
      * @param length DEFLATE 流长度
      * @return 解压后的字节数组
      */
-    internal fun inflate(input: ByteArray, offset: Int, length: Int): ByteArray {
+    internal fun inflate(
+        input: ByteArray, offset: Int, length: Int,
+        maxOutputBytes: Int = ArchiveLimits.MAX_ENTRY_BYTES,
+    ): ByteArray {
+        require(offset >= 0 && length >= 0 && offset.toLong() + length <= input.size) { "Invalid DEFLATE range" }
+        require(maxOutputBytes in 0..ArchiveLimits.MAX_ENTRY_BYTES) { "DEFLATE size limit exceeded" }
+        val outputLimit = minOf(maxOutputBytes.toLong(), length.toLong() * ArchiveLimits.MAX_COMPRESSION_RATIO).toInt()
         val reader = BitReader(input, offset, offset + length)
-        val out = ByteBuilder(if (length < 256) 256 else length * 3)
+        val out = ByteBuilder(minOf(256, outputLimit), outputLimit)
 
         while (true) {
             val bfinal = reader.readBit()
@@ -693,7 +713,7 @@ object NativeZipCodec {
 // ============================================================
 
 /** 可动态扩展的字节缓冲区 (等价 JVM ByteArrayOutputStream, Kotlin/Native 无标准库实现)。 */
-private class ByteBuilder(initialCapacity: Int = 256) {
+private class ByteBuilder(initialCapacity: Int = 256, private val maxCapacity: Int = Int.MAX_VALUE) {
     private var buf = ByteArray(initialCapacity)
     private var sz = 0
 
@@ -717,10 +737,10 @@ private class ByteBuilder(initialCapacity: Int = 256) {
     fun toArray(): ByteArray = buf.copyOf(sz)
 
     private fun ensureCapacity(minCapacity: Int) {
+        require(minCapacity >= 0 && minCapacity <= maxCapacity) { "DEFLATE output limit exceeded" }
         if (minCapacity > buf.size) {
-            var newCap = buf.size
-            while (newCap < minCapacity) newCap = newCap * 3 / 2 + 1
-            buf = buf.copyOf(newCap)
+            val grown = (buf.size.toLong() * 3 / 2 + 1).coerceAtMost(maxCapacity.toLong()).toInt()
+            buf = buf.copyOf(maxOf(minCapacity, grown))
         }
     }
 }

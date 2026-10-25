@@ -516,9 +516,13 @@ interface JsExtensionsCommon {
      * (sslContext 入参经 [JsExtensionsPlatform.unsafeSslContext] 门面, native 端为 null 不走 unsafe SSL)
      */
     fun get(urlStr: String, headers: Map<String, String>): Connection.Response {
-        val requestHeaders = if (getSource()?.enabledCookieJar == true) {
-            headers.toMutableMap().apply { put(cookieJarHeader, "1") }
-        } else headers
+        val requestHeaders = headers.toMutableMap().apply {
+            if (getSource()?.enabledCookieJar == true) put(cookieJarHeader, "1")
+            if (CookieStoreProviders.get() is io.legado.app.help.http.StructuredCookieStore) {
+                keys.removeAll { it.equals(io.legado.app.help.http.cookieScopeHeader, true) }
+                getSource()?.getKey()?.let { put(io.legado.app.help.http.cookieScopeHeader, it) }
+            }
+        }
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
             jsContext.ensureActive()
@@ -537,9 +541,13 @@ interface JsExtensionsCommon {
      * js实现重定向拦截,网络访问head,不返回Response Body更省流量
      */
     fun head(urlStr: String, headers: Map<String, String>): Connection.Response {
-        val requestHeaders = if (getSource()?.enabledCookieJar == true) {
-            headers.toMutableMap().apply { put(cookieJarHeader, "1") }
-        } else headers
+        val requestHeaders = headers.toMutableMap().apply {
+            if (getSource()?.enabledCookieJar == true) put(cookieJarHeader, "1")
+            if (CookieStoreProviders.get() is io.legado.app.help.http.StructuredCookieStore) {
+                keys.removeAll { it.equals(io.legado.app.help.http.cookieScopeHeader, true) }
+                getSource()?.getKey()?.let { put(io.legado.app.help.http.cookieScopeHeader, it) }
+            }
+        }
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
             jsContext.ensureActive()
@@ -582,9 +590,13 @@ interface JsExtensionsCommon {
         bodyCharset: String?,
         headers: Map<String, String>,
     ): Connection.Response {
-        val requestHeaders = if (getSource()?.enabledCookieJar == true) {
-            headers.toMutableMap().apply { put(cookieJarHeader, "1") }
-        } else headers
+        val requestHeaders = headers.toMutableMap().apply {
+            if (getSource()?.enabledCookieJar == true) put(cookieJarHeader, "1")
+            if (CookieStoreProviders.get() is io.legado.app.help.http.StructuredCookieStore) {
+                keys.removeAll { it.equals(io.legado.app.help.http.cookieScopeHeader, true) }
+                getSource()?.getKey()?.let { put(io.legado.app.help.http.cookieScopeHeader, it) }
+            }
+        }
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
             jsContext.ensureActive()
@@ -840,16 +852,15 @@ interface JsExtensionsCommon {
     /**
      * js实现读取cookie
      *
-     * 底层走 [CookieStoreProviders] (已下沉 commonMain, app 端注册 AndroidCookieStoreProvider
-     * 委托 CookieStore)。未注册时返回空串, 与原 app 端 CookieStore.getCookie 等价。
+     * 仅允许读取当前书源同 origin 的 Cookie；其它目标明确拒绝。
      */
     fun getCookie(tag: String): String {
         return getCookie(tag, null)
     }
 
     fun getCookie(tag: String, key: String?): String {
-        val provider = CookieStoreProviders.get() ?: return ""
-        return key?.let { provider.getKey(tag, it) } ?: provider.getCookie(tag)
+        val cookie = io.legado.app.help.source.ScopedSourceNetwork(getSource()?.getKey()).getCookie(tag)
+        return if (key == null) cookie else io.legado.app.help.http.cookieToMap(cookie)[key].orEmpty()
     }
 
     //****************** P1 压缩文件读取 (走 ArchiveProviders, 跨端) ******************//
@@ -1066,11 +1077,10 @@ interface JsExtensionsCommon {
      * 原版返回 java.io.File 对象 (JS 可调 .exists()/.readBytes() 等); 本实现返回路径
      * String —— commonMain 跨平台签名统一所需 (native 端无法暴露 Java File 对象),
      * 属迁移时的能力退化, 书源 JS 按 File 用法的调用需适配为字符串 + 现有工具函数。
-     * 安全校验未丢: [FileUtilsCommon.resolveCachePath] 复刻原版路径解析 + 非法路径
-     * SecurityException 检查。
+     * 文件访问限于当前书源的私有缓存目录，拒绝目录穿越和符号链接。
      */
     fun getFile(path: String): String {
-        return FileUtilsCommon.resolveCachePath(path)
+        return FileUtilsCommon.resolveSourcePath(getSource()?.getKey(), path)
     }
 
     /**
@@ -1079,14 +1089,14 @@ interface JsExtensionsCommon {
      * @return 文件字节内容, 文件不存在返回 null
      */
     fun readFile(path: String): ByteArray? {
-        return FileUtilsCommon.readBytes(FileUtilsCommon.resolveCachePath(path))
+        return FileUtilsCommon.readBytes(FileUtilsCommon.resolveSourcePath(getSource()?.getKey(), path))
     }
 
     /**
      * 读取文本文件 (自动检测编码)
      */
     fun readTxtFile(path: String): String {
-        val bytes = FileUtilsCommon.readBytes(FileUtilsCommon.resolveCachePath(path)) ?: return ""
+        val bytes = FileUtilsCommon.readBytes(FileUtilsCommon.resolveSourcePath(getSource()?.getKey(), path)) ?: return ""
         val charsetName = EncodingDetect.getEncode(bytes)
         return JsExtensionsPlatform.bytesToStr(bytes, charsetName)
     }
@@ -1095,7 +1105,7 @@ interface JsExtensionsCommon {
      * 读取文本文件 (指定编码)
      */
     fun readTxtFile(path: String, charsetName: String): String {
-        val bytes = FileUtilsCommon.readBytes(FileUtilsCommon.resolveCachePath(path)) ?: return ""
+        val bytes = FileUtilsCommon.readBytes(FileUtilsCommon.resolveSourcePath(getSource()?.getKey(), path)) ?: return ""
         return JsExtensionsPlatform.bytesToStr(bytes, charsetName)
     }
 
@@ -1103,7 +1113,7 @@ interface JsExtensionsCommon {
      * 删除本地文件
      */
     fun deleteFile(path: String): Boolean {
-        return FileUtilsCommon.delete(FileUtilsCommon.resolveCachePath(path), true)
+        return FileUtilsCommon.delete(FileUtilsCommon.resolveSourcePath(getSource()?.getKey(), path), true)
     }
 
     /**
@@ -1134,18 +1144,11 @@ interface JsExtensionsCommon {
     }
 
     /**
-     * js实现压缩文件解压 (走 ArchiveProviders, 跨端)
+     * 旧解压 Provider 只能写共享目录，脚本入口拒绝访问；App 文件导入仍可正常解压。
      * @param zipPath 相对路径
-     * @return 解压临时目录相对路径
      */
     fun unArchiveFile(zipPath: String): String {
-        if (zipPath.isEmpty()) return ""
-        val absPath = FileUtilsCommon.resolveCachePath(zipPath)
-        val archiveProvider = ArchiveProviders.get()
-        archiveProvider.deCompress(absPath)
-        // basename 提取: 兼容 '/' 与 '\' 分隔符, 与原 File.name 行为一致
-        val name = absPath.substringAfterLast('/').substringAfterLast('\\')
-        return FileUtilsCommon.getPath(archiveProvider.tempFolderName, MD5Utils.md5Encode16(name))
+        throw io.legado.app.exception.SecurityException("Script archive extraction is disabled; use the app import flow")
     }
 
     /**
@@ -1155,10 +1158,11 @@ interface JsExtensionsCommon {
      */
     fun getTxtInFolder(path: String): String {
         if (path.isEmpty()) return ""
-        val absPath = FileUtilsCommon.resolveCachePath(path)
+        val absPath = FileUtilsCommon.resolveSourcePath(getSource()?.getKey(), path)
         val contents = StringBuilder()
         FileUtilsCommon.listFiles(absPath).forEach { fileAbsPath ->
-            val bytes = FileUtilsCommon.readBytes(fileAbsPath) ?: return@forEach
+            val safePath = FileUtilsCommon.resolveSourcePath(getSource()?.getKey(), path.trimEnd('/') + "/" + fileAbsPath.substringAfterLast('/'))
+            val bytes = FileUtilsCommon.readBytes(safePath) ?: return@forEach
             val charsetName = EncodingDetect.getEncode(bytes)
             contents.append(JsExtensionsPlatform.bytesToStr(bytes, charsetName))
                 .append("\n")
@@ -1183,10 +1187,8 @@ interface JsExtensionsCommon {
             coroutineContext = jsContext.coroutineContext ?: EmptyCoroutineContext
         )
         val type = analyzeUrl.type ?: getUrlSuffix(url)
-        val path = FileUtilsCommon.getPath(
-            FileUtilsCommon.getCachePath(),
-            "${MD5Utils.md5Encode16(url)}.${type}"
-        )
+        val relativePath = "${MD5Utils.md5Encode16(url)}.${type}"
+        val path = FileUtilsCommon.resolveSourcePath(getSource()?.getKey(), relativePath)
         FileUtilsCommon.createFileReplace(path)
         return try {
             // 流式写入 (对齐原版 getInputStream().copyTo, 大文件不整块缓冲): 失败直接抛,
@@ -1198,7 +1200,7 @@ interface JsExtensionsCommon {
             } finally {
                 input.close()
             }
-            path.substring(FileUtilsCommon.getCachePath().length)
+            relativePath
         } catch (e: Throwable) {
             FileUtilsCommon.delete(path, true)
             throw e
@@ -1223,17 +1225,15 @@ interface JsExtensionsCommon {
             coroutineContext = jsContext.coroutineContext ?: EmptyCoroutineContext
         ).type ?: return ""
         FileUtilsCommon.createFolderIfNotExist(FileUtilsCommon.getCachePath())
-        val path = FileUtilsCommon.getPath(
-            FileUtilsCommon.getCachePath(),
-            "${MD5Utils.md5Encode16(url)}.${type}"
-        )
+        val relativePath = "${MD5Utils.md5Encode16(url)}.${type}"
+        val path = FileUtilsCommon.resolveSourcePath(getSource()?.getKey(), relativePath)
         FileUtilsCommon.createFileReplace(path)
         content.hexToByteArray().let {
             if (it.isNotEmpty()) {
                 FileUtilsCommon.writeBytes(path, it)
             }
         }
-        return path.substring(FileUtilsCommon.getCachePath().length)
+        return relativePath
     }
 
     /**
@@ -1250,11 +1250,11 @@ interface JsExtensionsCommon {
      * @param saveTime 缓存时间，单位：秒
      */
     fun cacheFile(urlStr: String, saveTime: Int): String {
-        val key = MD5Utils.md5Encode16(urlStr)
+        val key = "script-file:${MD5Utils.md5Encode(getSource()?.getKey())}:${MD5Utils.md5Encode16(urlStr)}"
         val cachePath = CacheManager.get(key)
         return if (
             cachePath.isNullOrBlank() ||
-            !FileUtilsCommon.exist(FileUtilsCommon.resolveCachePath(cachePath))
+            !FileUtilsCommon.exist(FileUtilsCommon.resolveSourcePath(getSource()?.getKey(), cachePath))
         ) {
             val path = downloadFile(urlStr)
             log("首次下载 $urlStr >> $path")

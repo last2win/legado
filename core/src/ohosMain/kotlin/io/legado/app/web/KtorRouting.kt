@@ -25,6 +25,7 @@ import io.ktor.utils.io.writeFully
 import io.legado.app.constant.AppLog
 import io.legado.app.utils.stackTraceStr
 import io.legado.app.web.api.WebApi
+import io.legado.app.web.api.WebAccess
 import io.legado.app.web.api.WebApiRequest
 import io.legado.app.web.api.WebApiResponse
 import io.legado.app.web.utils.AssetsWeb
@@ -58,7 +59,6 @@ fun Application.configureHttpRouting(assetsWeb: AssetsWeb) {
             val origin = call.request.headers["origin"]
             call.response.headers.append("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
             call.response.headers.append("Access-Control-Allow-Headers", "content-type")
-            call.response.headers.append("Access-Control-Allow-Origin", origin ?: "*")
             call.respondText("")
         }
         // API + 静态资源 (对齐 HttpServer serve GET/POST 分支)
@@ -70,6 +70,11 @@ fun Application.configureHttpRouting(assetsWeb: AssetsWeb) {
 
 /** 处理单次 API/静态资源请求 (对齐 HttpServer.serve try 块)。 */
 private suspend fun handleApiCall(call: ApplicationCall, assetsWeb: AssetsWeb) {
+    val headers = call.request.headers.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
+    if (!WebAccess.isPublicAsset(call.request.httpMethod.value, call.request.path()) && !WebAccess.authorized(headers)) {
+        call.respondText("Authentication required", status = HttpStatusCode.Unauthorized)
+        return
+    }
     // 拉起 Service 续命 (app 端) / no-op (桌面/鸿蒙端)
     WebServerManager.serve()
     val origin = call.request.headers["origin"]
@@ -86,7 +91,6 @@ private suspend fun handleApiCall(call: ApplicationCall, assetsWeb: AssetsWeb) {
         // mediaStream 已下线，刻意不附加 CORS，避免继续把它暴露为可用代理。
         if (request.path != "/mediaStream") {
             call.response.headers.append("Access-Control-Allow-Methods", "GET, POST")
-            call.response.headers.append("Access-Control-Allow-Origin", origin ?: "*")
         }
 
         when (apiResponse) {

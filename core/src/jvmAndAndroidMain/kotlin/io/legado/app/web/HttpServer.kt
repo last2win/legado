@@ -7,6 +7,7 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.utils.stackTraceStr
 import io.legado.app.utils.toJsonElement
 import io.legado.app.web.api.WebApi
+import io.legado.app.web.api.WebAccess
 import io.legado.app.web.api.WebApiRequest
 import io.legado.app.web.api.WebApiResponse
 import io.legado.app.web.utils.AssetsWeb
@@ -30,6 +31,12 @@ class HttpServer(port: Int) : NanoHTTPD(port) {
     private val assetsWeb = AssetsWeb("web")
 
     override fun serve(session: IHTTPSession): Response {
+        // Authenticate before parsing uploads or invoking service/controller code.
+        if (!WebAccess.isPublicAsset(session.method.name, session.uri) && !WebAccess.authorized(session.headers)) {
+            return newFixedLengthResponse(Response.Status.UNAUTHORIZED, "text/plain", "Authentication required").apply {
+                addHeader("Cache-Control", "no-store")
+            }
+        }
         // 拉起 Service 续命 (app 端) / no-op (桌面端)
         WebServerManager.serve()
         val ct = ContentType(session.headers["content-type"]).tryUTF8()
@@ -57,7 +64,6 @@ class HttpServer(port: Int) : NanoHTTPD(port) {
             val response = newFixedLengthResponse("")
             response.addHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
             response.addHeader("Access-Control-Allow-Headers", "content-type")
-            response.addHeader("Access-Control-Allow-Origin", origin ?: "*")
             return response
         }
 
@@ -155,7 +161,6 @@ class HttpServer(port: Int) : NanoHTTPD(port) {
                 }
             }
             response.addHeader("Access-Control-Allow-Methods", "GET, POST")
-            response.addHeader("Access-Control-Allow-Origin", origin)
             if (uri != "/mediaStream") {
                 AppLog.putDebug("$TAG: ${session.method.name} - $uri - ${session.queryParameterString} - End($startAt)")
             }

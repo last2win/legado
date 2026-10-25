@@ -235,6 +235,7 @@ actual class KmpHttpClientBuilder actual constructor() {
         val effectiveCallTimeout =
             if (callTimeoutMillis > 0) callTimeoutMillis else DEFAULT_TIMEOUT_MS
         val client = HttpClient(Darwin) {
+            followRedirects = false
             // 下载进度: BodyProgress 插件在响应通道上逐字节上报 (NativeKmpCall 经 onDownload 注册,
             // 漫画页下载进度/转圈环心消费, 对照 desktop okhttp ProgressResponseBody 拦截器)
             install(BodyProgress)
@@ -250,6 +251,10 @@ actual class KmpHttpClientBuilder actual constructor() {
                 socketTimeoutMillis = effectiveReadTimeout
             }
             engine {
+                configureSession {
+                    HTTPShouldSetCookies = false
+                    HTTPCookieStorage = null
+                }
                 proxyHost?.let { host ->
                     proxy = ProxyBuilder.http("http://$host:$proxyPort")
                 }
@@ -648,22 +653,41 @@ internal class NativeKmpCall(
         val ktorClient = client.ktorClient
             ?: throw IllegalStateException("KmpHttpClient not initialized (use KmpHttpClientBuilder.build())")
         val enableCookieJar = request.header(cookieJarHeader) != null
-        val prepared = request.prepareForSend()
-        val ktorRequest = prepared.toKtorHttpRequestBuilder()
-        client.proxyAuthHeader?.let { ktorRequest.header(HttpHeaders.ProxyAuthorization, it) }
-        // 字节级下载进度: Ktor onDownload (BodyProgress 插件) 按 url 广播到注册表
-        // (漫画页 Image 的 DisposableEffect 监听转圈环心; 无监听者时仅遍历空表)
-        ktorRequest.onDownload { bytesSentTotal, contentLength ->
-            DownloadProgressRegistry.notify(prepared.url.toString(), bytesSentTotal, contentLength)
+        val sourceKey = request.header(cookieScopeHeader)
+        val sendStoredCookies = enableCookieJar || request.header("Cookie") != null
+        var current = request
+        repeat(21) { hop ->
+            val prepared = current.prepareForSend()
+            val ktorRequest = prepared.toKtorHttpRequestBuilder()
+            client.proxyAuthHeader?.let { ktorRequest.header(HttpHeaders.ProxyAuthorization, it) }
+            ktorRequest.onDownload { bytesSentTotal, contentLength ->
+                DownloadProgressRegistry.notify(prepared.url.toString(), bytesSentTotal, contentLength)
+            }
+            val httpResponse = ktorClientRequest(ktorClient, ktorRequest)
+            val response = KmpResponse(httpResponse, prepared)
+            if (enableCookieJar) IosCookieStore.saveResponseCookies(sourceKey, response)
+            val location = httpResponse.headers[HttpHeaders.Location]
+            if (httpResponse.status.value !in listOf(301, 302, 303, 307, 308) || location == null) return response
+            check(hop < 20) { "Too many HTTP redirects" }
+            val target = io.legado.app.utils.NetworkUtils.getAbsoluteURL(prepared.url.toString(), location)
+            require(CookieTarget.parse(target) != null) { "Unsupported redirect URL" }
+            val builder = current.newBuilder().url(target).removeHeader("Cookie")
+            if (!sameCookieOrigin(prepared.url.toString(), target)) {
+                builder.removeHeader("Authorization")
+            }
+            if ((httpResponse.status.value == 303 && current.method != "HEAD") ||
+                (httpResponse.status.value in listOf(301, 302) && current.method == "POST")) {
+                builder.method("GET", null).removeHeader("Content-Type").removeHeader("Content-Length")
+            }
+            // Re-select scoped cookies for EACH URL (including same-host path and HTTPS changes).
+            if (sendStoredCookies) {
+                IosCookieStore.getCookieForSource(sourceKey, target).takeIf { it.isNotEmpty() }
+                    ?.let { builder.header("Cookie", it) }
+            }
+            current = builder.build()
+            response.close()
         }
-        val httpResponse = ktorClientRequest(ktorClient, ktorRequest)
-        // Ktor 自动跟随重定向: 响应关联的最终请求 URL (与 prepared.url 不同即发生过重定向)
-        val finalUrl = httpResponse.call.request.url.toString()
-        val response = KmpResponse(httpResponse, prepared, finalUrl)
-        if (enableCookieJar) {
-            CookieJarBridgeHolder.get()?.saveResponse(response)
-        }
-        return response
+        error("Too many HTTP redirects")
     }
 
     /** retryOnConnectionFailure(true) 等价: 非超时类传输错误重试一次 (OkHttp 默认重试) */
@@ -946,9 +970,10 @@ private fun KmpRequest.prepareForSend(): KmpRequest {
 
     if (header(cookieJarHeader) != null) {
         builder.removeHeader(cookieJarHeader)
-        return CookieJarBridgeHolder.get()?.loadRequest(builder.build()) ?: builder.build()
+        return (CookieJarBridgeHolder.get()?.loadRequest(builder.build()) ?: builder.build())
+            .newBuilder().removeHeader(cookieScopeHeader).build()
     }
-    return builder.build()
+    return builder.removeHeader(cookieScopeHeader).build()
 }
 
 /**

@@ -16,6 +16,13 @@ import io.legado.app.web.utils.WebStringsProviders
  * - 其余逻辑逐字等价, 保真红线
  */
 class WebSocketServer(port: Int) : NanoWSD(port) {
+    override fun serve(session: IHTTPSession): Response {
+        if (!io.legado.app.web.api.WebAccess.authorized(session.headers, webSocket = true)) {
+            return newFixedLengthResponse(Response.Status.UNAUTHORIZED, "text/plain", "Authentication required")
+        }
+        return super.serve(session)
+    }
+
 
     override fun openWebSocket(handshake: IHTTPSession): WebSocket? {
         // 拉起 Service 续命 (app 端) / no-op (桌面端)

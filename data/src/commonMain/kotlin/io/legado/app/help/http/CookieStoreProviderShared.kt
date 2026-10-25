@@ -35,6 +35,11 @@ import kotlin.concurrent.Volatile
  * 未注册时 [get] 返回 null, 调用方应处理 null (与 [CookieJarBridgeHolder.get] 一致)。
  */
 interface CookieStoreProvider {
+    fun getCookieForSource(sourceKey: String?, url: String): String = getCookie(url)
+    fun setCookieForSource(sourceKey: String?, url: String, cookie: String?) = setCookie(url, cookie)
+    fun replaceCookieForSource(sourceKey: String?, url: String, cookie: String) = replaceCookie(url, cookie)
+    fun removeCookieForSource(sourceKey: String?, url: String) = removeCookie(url)
+
 
     /**
      * 保存 cookie (对应 app 端 `CookieStore.setCookie`)。

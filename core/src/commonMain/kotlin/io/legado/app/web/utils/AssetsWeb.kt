@@ -41,7 +41,11 @@ class AssetsWeb(rootPath: String = "web") {
     suspend fun getResponse(path: String): WebAssetResponse {
         // 统一用正斜杠: composeResources 资源路径均用 / 分隔
         val fullPath = (rootPath + path).replace("/+".toRegex(), "/")
-        val bytes = WebAssetSources.get().read(fullPath)
+        require(!path.contains("..") && !path.contains('\\')) { "Invalid asset path" }
+        var bytes = WebAssetSources.get().read(fullPath)
+        if (path == "/index.html") {
+            bytes = bytes.decodeToString().replace("<head>", "<head>" + SESSION_BOOTSTRAP).encodeToByteArray()
+        }
         return WebAssetResponse(bytes, getMimeType(fullPath))
     }
 
@@ -58,3 +62,20 @@ class AssetsWeb(rootPath: String = "web") {
         }
     }
 }
+
+
+/** Exchange a URL fragment (never sent in HTTP requests) for an HttpOnly session cookie. */
+private val SESSION_BOOTSTRAP = """
+<script>
+(function() {
+  var token = new URLSearchParams(location.hash.slice(1)).get('access_token');
+  if (!token) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/__session', false);
+  xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+  xhr.send();
+  if (xhr.status !== 200) alert('连接凭证已失效，请从 App 重新打开 Web 服务地址。');
+})();
+</script>
+""".trimIndent()

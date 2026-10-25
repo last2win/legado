@@ -4,10 +4,11 @@ package io.legado.app.ui.browser
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.UIKitView
-import io.legado.app.help.http.CookieStoreProviders
+import io.legado.app.help.http.IosCookieStore
 import io.legado.app.utils.canonicalizeUri
 import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSHTTPCookie
@@ -19,6 +20,7 @@ import platform.WebKit.WKNavigation
 import platform.WebKit.WKNavigationDelegateProtocol
 import platform.WebKit.WKUIDelegateProtocol
 import platform.WebKit.WKWebView
+import platform.WebKit.WKWebsiteDataStore
 import platform.WebKit.WKWebViewConfiguration
 import platform.darwin.NSObject
 
@@ -27,9 +29,7 @@ import platform.darwin.NSObject
  *
  * 对照 app 端 AndroidWebView: JS/domStorage + onPageFinished cookie 同步。
  * WKWebView 默认启用 JS / DOM storage / mixed content, 无需显式配置;
- * didFinish 时取 WKHTTPCookieStore.allCookies, 转 "k=v; k=v" 同步到
- * [CookieStoreProviders] 供 OkHttp 复用登录态 (等价 Android CookieManager.getCookie),
- * 并回调 [WebViewCallbacks.onPageFinished] (CF 挑战检测/验证回传由 WebViewRoute 处理)。
+ * didFinish 将当前站点的完整 Cookie 属性写入书源隔离存储，网络发送时再按 URL 匹配。
  *
  * 加载语义对照 AndroidWebView: [WebViewConfig.headerMap] 注入 loadRequest 请求头,
  * [WebViewConfig.html] 非空时 loadHTMLString (POST body/data: 解包/原始 HTML);
@@ -44,10 +44,13 @@ fun IosWebViewSlot(
     modifier: Modifier = Modifier,
     callbacks: WebViewCallbacks = WebViewCallbacks(),
 ) {
-    val webView = remember {
-        WKWebView(CGRectMake(0.0, 0.0, 0.0, 0.0), WKWebViewConfiguration())
+    val currentConfig = rememberUpdatedState(config)
+    val webView = remember(config.sourceKey) {
+        WKWebView(CGRectMake(0.0, 0.0, 0.0, 0.0), WKWebViewConfiguration().apply {
+            websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore()
+        })
     }
-    val navDelegate = remember { WebViewNavDelegate(callbacks) { config } }
+    val navDelegate = remember(webView, callbacks) { WebViewNavDelegate(callbacks) { currentConfig.value } }
     // WKWebView.UIDelegate 同为 weak, 一并 remember 持强引用
     val uiDelegate = remember { WebViewUiDelegate(callbacks) }
 
@@ -83,8 +86,19 @@ fun IosWebViewSlot(
 private fun loadWithHeaders(webView: WKWebView, config: WebViewConfig) {
     val nsUrl = NSURL.URLWithString(config.url.canonicalizeUri()) ?: return
     val request = NSMutableURLRequest(uRL = nsUrl)
-    config.headerMap.forEach { (key, value) -> request.setValue(value, forHTTPHeaderField = key) }
-    webView.loadRequest(request)
+    config.headerMap.filterKeys { !it.equals(io.legado.app.help.http.cookieScopeHeader, true) }
+        .forEach { (key, value) -> request.setValue(value, forHTTPHeaderField = key) }
+    val cookies = IosCookieStore.cookiesForSource(config.sourceKey, config.url)
+    if (cookies.isEmpty()) {
+        webView.loadRequest(request)
+    } else {
+        var remaining = cookies.size
+        cookies.forEach { cookie ->
+            webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
+                if (--remaining == 0) webView.loadRequest(request)
+            }
+        }
+    }
 }
 
 /** html 模式已加载标记 (避免每次重组重复 loadHTMLString); UIView.tag 为 NSInteger (Long)。 */
@@ -94,9 +108,7 @@ private const val HTML_LOADED_TAG = 1L
  * WKNavigationDelegate: 仅监听 didFinish, 取 WKHTTPCookieStore cookie 同步到业务层 store,
  * 并回调 [WebViewCallbacks.onPageFinished]。
  *
- * cookie 写入与 Android 端对齐原版 WebViewActivity: 用 setCookie 覆写 (cookie 串是页面加载后的
- * 权威快照, replaceCookie 的合并会把服务端刚清掉的旧值并回去); [WebViewConfig.isLogin] 时再按
- * 书源 key 写一份, 供 OkHttp 复用登录态。
+ * 空快照也会同步以处理注销；跨站登录 Cookie 保留原域，不复制到书源 URL。
  */
 private class WebViewNavDelegate(
     private val callbacks: WebViewCallbacks,
@@ -110,19 +122,10 @@ private class WebViewNavDelegate(
         val cfg = config()
         val store = webView.configuration.websiteDataStore.httpCookieStore
         store.getAllCookies { cookies ->
-            // 拼接 "k=v; k=v" 形式 (对照 Android CookieManager.getCookie 输出格式)
-            val cookieString = cookies.orEmpty().joinToString("; ") {
-                val cookie = it as NSHTTPCookie
-                "${cookie.name}=${cookie.value}"
-            }
-            if (cookieString.isNotBlank()) {
-                CookieStoreProviders.get()?.setCookie(url, cookieString)
-                if (cfg.isLogin) {
-                    CookieStoreProviders.get()?.setCookie(cfg.sourceKey, cookieString)
-                }
-            }
+            if (webView.URL?.absoluteString != url) return@getAllCookies
+            IosCookieStore.syncFromWebView(cfg.sourceKey, url, cookies.orEmpty().filterIsInstance<NSHTTPCookie>())
+            callbacks.onPageFinished?.invoke(url)
         }
-        callbacks.onPageFinished?.invoke(url)
         // 页面 URL 状态同步 (页面内跳转后菜单取最新链接)
         callbacks.onUrlChanged?.invoke(url)
     }
