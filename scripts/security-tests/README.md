@@ -121,3 +121,19 @@ EPUB 测试夹具补齐 ZIP 根目录文件；生产解析器允许读取包内�
 它们仍不覆盖真机 WebKit 登录、AVPlayer 网络抓包或完整 IPA 签名安装。
 本轮 Android CI 已越过源码编译，但发布打包日志报告 `key.jks` 的 `Tag number over 30 is not supported`；
 这属于现有签名配置失败，本次没有更换签名材料或修改仓库 Secrets。
+
+
+### 对照补充截图的验收清单
+
+| 截图中的问题 | 当前实现和回归证据 |
+| --- | --- |
+| commonMain 引用 Native 专有 SecurityException | `JsExtensionsCommon.unArchiveFile` 使用公共 `UnsupportedOperationException`；JVM、Android 和桌面实际编译已越过该错误。 |
+| RemoteZipCore 信任 compressedSize 分配、接受短读 | 先校验输入、目录、条目及实际文件区间，再读取；STORED 压缩/展开大小必须相等，读取必须精确，结果校验长度和 CRC。`ArchiveEntryRegression` 包含同类伪造大小样本和截断样本。 |
+| Native 导入直接整包读取 | `NativeFileBookAccessor`、本地 CBZ 和 `NativeArchiveProvider` 均在文件整读前检查输入上限，解析使用受限 RemoteZipCore。目录遍历检查条目数量和总展开量。 |
+| 脚本 GZIP/zlib/deflate 无实际输出预算 | `decompressBytes` 接入 StreamDecompressor，逐块检查实际累计输出、压缩比与取消状态；`StreamDecompressorTest` 直接调用脚本入口验证三种格式的压缩炸弹。 |
+| 鸿蒙路由构造参数错位 | 新默认字段移至末尾，三处鸿蒙调用使用具名参数；完整鸿蒙工具链验证仍未执行。 |
+| iOS 只编部分生产文件，未完整链接/打包 | 安全工作流新增 simulator/device 两条完整 App 构建：Xcode 编译 Swift 与扩展、链接共享 framework，分别生成模拟器 ZIP 和未签名 IPA。失败直接令作业失败，日志及产物保留 7 天；结果以对应提交的 Actions 为准。 |
+
+完整 iOS 构建脚本为 `bash scripts/security-tests/build-ios-app.sh simulator` 或 `device`，
+需 macOS、Xcode、JDK 21、XcodeGen。该验证只上传 Actions 产物，不创建或覆盖 GitHub Release，
+也不代表已完成 Apple 签名、真机安装或真机业务流程验证。

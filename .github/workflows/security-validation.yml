@@ -7,6 +7,8 @@ on:
       - 'data/**'
       - 'core/**'
       - 'ui/**'
+      - 'iosApp/**'
+      - 'scripts/build-ios-native.sh'
       - 'scripts/security-tests/**'
       - 'gradle/**'
       - '.github/workflows/security-validation.yml'
@@ -16,6 +18,8 @@ on:
       - 'data/**'
       - 'core/**'
       - 'ui/**'
+      - 'iosApp/**'
+      - 'scripts/build-ios-native.sh'
       - 'scripts/security-tests/**'
       - 'gradle/**'
       - '.github/workflows/security-validation.yml'
@@ -74,3 +78,39 @@ jobs:
         with:
           name: security-ios-test-results
           path: data/build/reports/tests
+  ios-app:
+    name: iOS app (${{ matrix.target }})
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [simulator, device]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v5
+      - uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: security-konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build and package the complete unsigned app
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: bash scripts/security-tests/build-ios-app.sh "$BUILD_TARGET"
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: security-ios-app-${{ matrix.target }}
+          path: |
+            iosApp/build/security/build.log
+            iosApp/build/security/*.zip
+            iosApp/build/security/*.ipa
+          retention-days: 7
