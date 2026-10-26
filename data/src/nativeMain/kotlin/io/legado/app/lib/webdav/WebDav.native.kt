@@ -460,29 +460,9 @@ actual open class WebDav actual constructor(
      * Kotlin/Native 主线程调用 runBlocking 可能 deadlock, 调用方需在后台线程使用。
      */
     actual fun readRange(offset: Long, length: Int, fileSize: Long): ByteArray {
-        if (length <= 0) return ByteArray(0)
-        if (fileSize in 1..offset) return ByteArray(0)
-
-        val end = if (fileSize > 0) {
-            minOf(fileSize - 1, offset + length - 1)
-        } else {
-            offset + length - 1
-        }
-        val range = "bytes=$offset-$end"
-
         val url = httpUrl ?: throw WebDavException("Invalid WebDAV URL")
         return runBlockingInScope(EmptyCoroutineContext) {
-            val resp = webDavClient.get(url) {
-                header(authorization.name, authorization.data)
-                header("Range", range)
-            }
-            if (resp.status.value == 200) {
-                throw WebDavException("Server does not support Range requests")
-            }
-            if (!resp.status.isSuccess()) {
-                throw WebDavException("HTTP request failed: ${resp.status.value}")
-            }
-            resp.bodyAsBytes()
+            webDavClient.readWebDavRange(url, authorization, offset, length, fileSize)
         }
     }
 

@@ -137,3 +137,9 @@ EPUB 测试夹具补齐 ZIP 根目录文件；生产解析器允许读取包内�
 完整 iOS 构建脚本为 `bash scripts/security-tests/build-ios-app.sh simulator` 或 `device`，
 需 macOS、Xcode、JDK 21、XcodeGen。该验证只上传 Actions 产物，不创建或覆盖 GitHub Release，
 也不代表已完成 Apple 签名、真机安装或真机业务流程验证。
+
+复核时进一步补齐 ZIP 数据源入口：WebDAV Range 请求使用流式响应，实际读取上限为请求区间长度，
+拒绝超长响应、非 206 响应及偏移溢出；Native 使用 `prepareGet().execute {}`，避免 Ktor 在预算检查前
+自动缓存整份响应。iOS 授权文件及 Native 本地 CBZ 除文件长度预检外，实际读取同样有 64 MiB 上限。
+`ArchiveReadLimitsTest` 验证超限时最多消费预算加一个探测字节，`WebDavRangeTest` 用 MockEngine
+直接覆盖生产 Range 请求函数，包含无 Content-Length 和伪造 Content-Length 的响应。

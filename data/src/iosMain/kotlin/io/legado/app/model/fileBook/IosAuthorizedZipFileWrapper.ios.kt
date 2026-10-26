@@ -1,5 +1,10 @@
 package io.legado.app.model.fileBook
 
+import io.legado.app.help.storage.ArchiveLimits
+import io.legado.app.help.storage.readArchiveBytes
+import okio.FileSystem
+import okio.Path.Companion.toPath
+import okio.use
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.constant.DirUsage
@@ -59,7 +64,8 @@ internal class IosAuthorizedZipFileWrapper(private val path: String) : ZipFileWr
     /** 单次区间读: 授权内整读文件后切片 (与 nativeMain 实现同策略, 不加第二套随机读逻辑)。 */
     private fun readRange(offset: Long, length: Int): ByteArray =
         IosSecurityScopedStorage.withAccess(path, DirUsage.BookTree) { target ->
-            val bytes = File(target).readBytes()
+            require(File(target).length() in 0..ArchiveLimits.MAX_INPUT_BYTES.toLong()) { "ZIP input size limit exceeded" }
+            val bytes = FileSystem.SYSTEM.source(target.toPath()).use { it.readArchiveBytes(ArchiveLimits.MAX_INPUT_BYTES) }
             val from = offset.coerceIn(0L, bytes.size.toLong()).toInt()
             val to = (from + length).coerceIn(from, bytes.size)
             bytes.copyOfRange(from, to)

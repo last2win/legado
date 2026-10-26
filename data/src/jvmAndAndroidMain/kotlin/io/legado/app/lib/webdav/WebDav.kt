@@ -2,6 +2,8 @@ package io.legado.app.lib.webdav
 
 import com.fleeksoft.ksoup.Ksoup
 import com.fleeksoft.ksoup.parser.Parser
+import io.legado.app.help.storage.ArchiveLimits
+import io.legado.app.help.storage.readArchiveBytes
 import io.legado.app.constant.AppLog
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.copyToFileAtomically
@@ -459,7 +461,9 @@ actual open class WebDav actual constructor(
 
     @Throws(IOException::class)
     actual fun readRange(offset: Long, length: Int, fileSize: Long): ByteArray {
-        if (length <= 0) return ByteArray(0)
+        require(length in 0..ArchiveLimits.MAX_INPUT_BYTES && offset >= 0 &&
+            offset <= Long.MAX_VALUE - length) { "Invalid archive read range" }
+        if (length == 0) return ByteArray(0)
         if (fileSize in 1..offset) return ByteArray(0)
 
         val end = if (fileSize > 0) {
@@ -482,7 +486,10 @@ actual open class WebDav actual constructor(
             if (!response.isSuccessful) {
                 throw IOException("HTTP request failed: ${response.code}")
             }
-            return response.body.bytes()
+            if (response.code != 206) throw IOException("Expected HTTP 206 for Range request")
+            val expected = (end - offset + 1).toInt()
+            require(response.body.contentLength() <= expected) { "Archive response exceeds requested size" }
+            return response.body.source().readArchiveBytes(expected)
         }
     }
 

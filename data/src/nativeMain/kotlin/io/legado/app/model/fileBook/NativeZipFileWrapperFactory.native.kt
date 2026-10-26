@@ -1,5 +1,9 @@
 package io.legado.app.model.fileBook
 
+import io.legado.app.help.storage.readArchiveBytes
+import okio.FileSystem
+import okio.Path.Companion.toPath
+import okio.use
 import io.legado.app.help.storage.ArchiveLimits
 import io.legado.app.model.script.JsEngines
 
@@ -70,7 +74,7 @@ internal class NativeZipFileWrapper(private val filePath: String) : ZipFileWrapp
      */
     private fun readRange(offset: Long, length: Int): ByteArray {
         require(file.length() in 0..ArchiveLimits.MAX_INPUT_BYTES.toLong()) { "ZIP input size limit exceeded" }
-        val bytes = file.readBytes()
+        val bytes = FileSystem.SYSTEM.source(file.path.toPath()).use { it.readArchiveBytes(ArchiveLimits.MAX_INPUT_BYTES) }
         val from = offset.coerceIn(0L, bytes.size.toLong()).toInt()
         val to = (from + length).coerceIn(from, bytes.size)
         return bytes.copyOfRange(from, to)
