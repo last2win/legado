@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package io.legado.app.model.script
 
 import io.legado.app.model.analyzeRule.AnalyzeRuleCore
