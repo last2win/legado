@@ -1,6 +1,6 @@
 # 安全修复与验证记录
 
-基线：`d31c0a270e7c8610e9679dbbda5a6bee06927952`。本次修改针对提供的静态审查截图，未发布安装包、未运行 GitHub 工作流。
+基线：`d31c0a270e7c8610e9679dbbda5a6bee06927952`。以下先保留第一轮修复与本地验证记录；第二轮修复及实际 GitHub CI 验证范围见本文末尾。
 
 ## 修复范围
 
@@ -68,9 +68,9 @@ scripts/security-tests/run.sh
 scripts/security-tests/run-transport.sh
 ```
 
-## 尚未完成的验证
+## 第一轮验证限制（历史记录）
 
-本机为 Linux，没有 Xcode/iOS SDK。已添加 `IosCookieStoreTest` 和 `NativeJsLifetimeTest`，但**尚未在模拟器执行**。应在 macOS 上按项目既有流程准备 QuickJS/mbedtls 原生库后执行：
+第一轮执行时，本机为 Linux，没有 Xcode/iOS SDK。已添加 `IosCookieStoreTest` 和 `NativeJsLifetimeTest`，但**尚未在模拟器执行**。应在 macOS 上按项目既有流程准备 QuickJS/mbedtls 原生库后执行：
 
 ```sh
 ./gradlew :data:iosSimulatorArm64Test -PenableIosTarget=true
@@ -103,3 +103,21 @@ scripts/security-tests/run-transport.sh
 macOS 编译 iOS UI、链接并执行 data 模拟器测试。工作流结果必须以当前提交 SHA 为准。
 本机仍无 Xcode，未执行 iOS/QuickJS/MockEngine 用例；未做真机 WebKit 登录、AVPlayer 抓包或完整 IPA 验证。
 本轮再次下载 Gradle 9.6.0 被 GitHub 分发地址连接超时阻断，本地全量编译仍没有通过证据。
+
+
+### 真实 CI 验证范围
+
+新增工作流会对每次相关修改编译生产 JVM 模块和 iOS UI，并链接、执行 iOS 模拟器测试；
+不能用独立测试、旧提交结果或工作流文件存在代替运行成功。
+具体提交结果见 [Security regression checks](https://github.com/last2win/legado/actions/workflows/security-validation.yml)，
+桌面与 Android 打包见 [Test Build](https://github.com/last2win/legado/actions/workflows/test.yml)。
+
+本轮已根据实际 iOS 编译/模拟器日志修复 Foundation 到期时间扩展、Native `okio.use` 导入和测试 cinterop 声明。
+实际 QuickJS 用例还发现并修复了整数标签句柄被当作浮点 union 读取的问题，以及 `Response.parse()` 返回的
+jsoup 包装对象与 ksoup DOM 分派类型不一致的问题；跨 scope 拒绝用例使用同一条可在所属 scope 成功执行的 DOM 方法。
+EPUB 测试夹具补齐 ZIP 根目录文件；生产解析器允许读取包内已存在但未列入 manifest 的封面图片。
+
+这些模拟器测试使用真实 QuickJS、DOM 和 Foundation Cookie；网络重定向使用 Ktor MockEngine。
+它们仍不覆盖真机 WebKit 登录、AVPlayer 网络抓包或完整 IPA 签名安装。
+本轮 Android CI 已越过源码编译，但发布打包日志报告 `key.jks` 的 `Tag number over 30 is not supported`；
+这属于现有签名配置失败，本次没有更换签名材料或修改仓库 Secrets。
