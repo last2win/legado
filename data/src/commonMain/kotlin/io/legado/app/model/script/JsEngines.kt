@@ -141,7 +141,7 @@ object JsEngines {
      * 转发到 [JsEngine.currentContext]。对应 app 顶层 `jsContextOrNull`。
      */
     val jsContextOrNull: JsScope?
-        get() = current.currentContext()
+        get() = if (provider == null) null else current.currentContext()
 
     /**
      * 在 JS 执行上下文中运行 block（同步版）。

@@ -121,7 +121,7 @@ fun buildRequest(request: Request, callback: UrlRequest.Callback): UrlRequest? {
         setHttpMethod(request.method)//设置
         allowDirectExecutor()
         headers.forEachIndexed { index, _ ->
-            if (headers.name(index) == cookieJarHeader) return@forEachIndexed
+            if (io.legado.app.help.http.isInternalHttpHeader(headers.name(index))) return@forEachIndexed
             addHeader(headers.name(index), headers.value(index))
         }
         if (requestBody != null) {

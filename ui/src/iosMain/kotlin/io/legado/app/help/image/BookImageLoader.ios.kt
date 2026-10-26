@@ -7,7 +7,6 @@ import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.annotation.ExperimentalCoilApi
 import coil3.memory.MemoryCache
-import coil3.network.ktor3.asNetworkClient
 import coil3.request.ImageRequest
 import coil3.request.SuccessResult
 import coil3.size.Precision
@@ -27,9 +26,8 @@ import okio.buffer
  * [BookImageLoader] 的 iOS Coil3 实现 (对照 androidMain BookImageLoader.android.kt /
  * jvmMain BookImageLoader.jvm.kt, 网络后端差异: OkHttp → Ktor3)。
  *
- * - ImageLoader 用 Coil3 + Ktor3 网络后端 (手搜 NetworkFetcher.Factory + ktorClient.asNetworkClient()),
- *   HttpClient 复用 [io.legado.app.help.http.NativeHttpProvider] 经 [OkHttpClientProviders]
- *   注册的 KmpHttpClient 内部 Ktor client (CIO engine, 继承 timeout 配置)。
+ * - ImageLoader 用 Coil3 + IosControlledNetworkClient，复用 NativeHttpProvider 的 KmpHttpClient。
+ *   所有跳转经过同一 Cookie/凭证策略和内部头过滤；底层使用 Darwin 引擎。
  * - 书源防盗链 header + header 规则 JS 改写后的 url: 网络层自动解析注入 (与 android/desktop
  *   同语义, 解析实现见 nonOhosUiMain/SourceImageHeaders.kt; 内存/磁盘命中零查源, 真发请求时才解析)。
  * - diskCache: `{AppFilesDirs.cacheDir}/image_cache` (Library/Caches 下, 系统可清理);
@@ -150,8 +148,8 @@ private fun buildIosBookImageLoader(): ImageLoader {
             // SourceHeaderNetworkClient 响应解密对齐 Glide DATA; ImageGuardNetworkClient 包最外层
             // 按原始 url 拦 failUrls)。
             // 直接构 NetworkFetcher.Factory 包 NetworkClient (KtorNetworkFetcherFactory 不接受
-            // NetworkClient), Ktor client 复用 NativeHttpProvider 的 KmpHttpClient 内部 client
-            // (internal 字段同模块可见; lambda 惰性求值, ImageLoader 构建时不触发网络栈初始化)
+            // NetworkClient), 经 KmpHttpClient 统一处理跳转、Cookie 和内部头
+            // (lambda 惰性求值, ImageLoader 构建时不触发网络栈初始化)
             // 漫画页: MangaModel 走完整取图链路 (图片缓存 → 本地书 FileBook → AnalyzeUrl 防盗链
             // header 下载 → ImageUtils.decode 解密), 与 android/desktop 同源
             add(MangaModelKeyer(), MangaModel::class)
@@ -161,14 +159,11 @@ private fun buildIosBookImageLoader(): ImageLoader {
             add(
                 coil3.network.NetworkFetcher.Factory(
                     networkClient = {
-                        val ktorClient = requireNotNull(OkHttpClientProviders.get().okHttpClient.ktorClient) {
-                            "KmpHttpClient 未初始化 (需经 KmpHttpClientBuilder.build 创建)"
-                        }
                         ImageGuardNetworkClient(
                             SourceHeaderNetworkClient(
-                                UriCanonicalNetworkClient(ktorClient.asNetworkClient()),
+                                IosControlledNetworkClient(OkHttpClientProviders.get().okHttpClient),
                                 ::resolveSourceRequest,
-                                keepCookieJarMarker = false,
+                                keepCookieJarMarker = true,
                             )
                         )
                     },

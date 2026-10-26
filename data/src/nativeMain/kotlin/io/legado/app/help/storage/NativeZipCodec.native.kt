@@ -306,14 +306,16 @@ object NativeZipCodec {
     internal fun inflate(
         input: ByteArray, offset: Int, length: Int,
         maxOutputBytes: Int = ArchiveLimits.MAX_ENTRY_BYTES,
+        checkCancelled: () -> Unit = {},
     ): ByteArray {
         require(offset >= 0 && length >= 0 && offset.toLong() + length <= input.size) { "Invalid DEFLATE range" }
         require(maxOutputBytes in 0..ArchiveLimits.MAX_ENTRY_BYTES) { "DEFLATE size limit exceeded" }
         val outputLimit = minOf(maxOutputBytes.toLong(), length.toLong() * ArchiveLimits.MAX_COMPRESSION_RATIO).toInt()
         val reader = BitReader(input, offset, offset + length)
-        val out = ByteBuilder(minOf(256, outputLimit), outputLimit)
+        val out = ByteBuilder(minOf(256, outputLimit), outputLimit, checkCancelled)
 
         while (true) {
+            checkCancelled()
             val bfinal = reader.readBit()
             val btype = reader.readBits(2)
             when (btype) {
@@ -713,7 +715,8 @@ object NativeZipCodec {
 // ============================================================
 
 /** 可动态扩展的字节缓冲区 (等价 JVM ByteArrayOutputStream, Kotlin/Native 无标准库实现)。 */
-private class ByteBuilder(initialCapacity: Int = 256, private val maxCapacity: Int = Int.MAX_VALUE) {
+private class ByteBuilder(initialCapacity: Int = 256, private val maxCapacity: Int = Int.MAX_VALUE,
+                          private val checkCancelled: () -> Unit = {}) {
     private var buf = ByteArray(initialCapacity)
     private var sz = 0
 
@@ -737,6 +740,7 @@ private class ByteBuilder(initialCapacity: Int = 256, private val maxCapacity: I
     fun toArray(): ByteArray = buf.copyOf(sz)
 
     private fun ensureCapacity(minCapacity: Int) {
+        if (minCapacity / 8192 != sz / 8192) checkCancelled()
         require(minCapacity >= 0 && minCapacity <= maxCapacity) { "DEFLATE output limit exceeded" }
         if (minCapacity > buf.size) {
             val grown = (buf.size.toLong() * 3 / 2 + 1).coerceAtMost(maxCapacity.toLong()).toInt()

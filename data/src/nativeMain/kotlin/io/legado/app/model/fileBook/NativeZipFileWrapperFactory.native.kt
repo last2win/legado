@@ -1,5 +1,8 @@
 package io.legado.app.model.fileBook
 
+import io.legado.app.help.storage.ArchiveLimits
+import io.legado.app.model.script.JsEngines
+
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
@@ -66,6 +69,7 @@ internal class NativeZipFileWrapper(private val filePath: String) : ZipFileWrapp
      * 且 cbz 体积受漫画单册限制。若后续出现大体积 cbz 性能问题, 再换 okio FileHandle 随机读。
      */
     private fun readRange(offset: Long, length: Int): ByteArray {
+        require(file.length() in 0..ArchiveLimits.MAX_INPUT_BYTES.toLong()) { "ZIP input size limit exceeded" }
         val bytes = file.readBytes()
         val from = offset.coerceIn(0L, bytes.size.toLong()).toInt()
         val to = (from + length).coerceIn(from, bytes.size)

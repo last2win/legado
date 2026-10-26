@@ -8,6 +8,7 @@ import io.legado.app.model.fileBook.ZipTestFixtures.sourceOf
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class RemoteZipCoreTest {
@@ -137,5 +138,23 @@ class RemoteZipCoreTest {
     @Test(expected = ZipIOException::class)
     fun garbageBytesThrowNoEocd() {
         coreOf(ByteArray(500)).ensureMeta()
+    }
+
+    @Test
+    fun forgedStoredSizeAndTruncatedRangeAreRejected() {
+        val bytes = buildZip(listOf(Spec("x", byteArrayOf(65), stored = true)))
+        val dir = ZipEntryReader.parseEocd(bytes, ZipEntryReader.findEocd(bytes))
+        val offset = dir.centralOffset.toInt() + ZipConstants.CENSIZ
+        val corrupt = bytes.copyOf()
+        repeat(4) { corrupt[offset + it] = (1_048_576 ushr (it * 8)).toByte() }
+        assertThrows(IllegalArgumentException::class.java) {
+            val core = coreOf(corrupt)
+            core.readDecompressed(core.ensureMeta().getValue("x"))
+        }
+        val core = RemoteZipCore(RangedSource { start, length, _ ->
+            val end = minOf(bytes.size, start.toInt() + length)
+            bytes.copyOfRange(start.toInt(), if (start > 0) end - 1 else end)
+        }, "truncated", bytes.size.toLong())
+        assertThrows(IllegalArgumentException::class.java) { core.ensureMeta() }
     }
 }

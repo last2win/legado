@@ -1,5 +1,7 @@
 package io.legado.app.model.fileBook
 
+import io.legado.app.help.storage.ArchiveLimits
+
 /**
  * 远程 zip 不整包读结构核心：EOCD 定位 + central directory 解析 + 按需读压缩数据。
  * 无锁，线程安全由调用方保证（app 侧 RemoteZipWrapper 加 @Synchronized）。
@@ -8,6 +10,7 @@ class RemoteZipCore(
     private val source: RangedSource,
     private val name: String,
     val fileSize: Long,
+    private val checkCancelled: () -> Unit = {},
 ) {
 
     class EntryMetadata(
@@ -25,11 +28,14 @@ class RemoteZipCore(
 
     /** 预置已缓存的目录定位，跳过 EOCD 探测 */
     fun preset(eocd: Long, central: Long, count: Int) {
+        validateDirectory(eocd, central, count)
         eocdOffset = eocd; centralOffset = central; entryCount = count
     }
 
     fun ensureMeta(): HashMap<String, EntryMetadata> {
+        checkCancelled()
         if (closed) throw IllegalStateException("Closed: $name")
+        require(fileSize in 0..ArchiveLimits.MAX_INPUT_BYTES.toLong()) { "ZIP input size limit exceeded" }
         entriesMetadata?.let { return it }
         if (eocdOffset == 0L) {
             val sSize = if (fileSize > 0) minOf(fileSize, 65600L).toInt() else 65600
@@ -42,9 +48,16 @@ class RemoteZipCore(
             entryCount = dir.entryCount
             centralOffset = dir.centralOffset
         }
-        val dir = source.readRange(centralOffset, (eocdOffset - centralOffset).toInt(), fileSize)
+        validateDirectory(eocdOffset, centralOffset, entryCount)
+        val dir = readExact(centralOffset, (eocdOffset - centralOffset).toInt())
+        var total = 0L
         return HashMap<String, EntryMetadata>(entryCount * 2).also { map ->
             ZipEntryReader.readCentralDirectory(dir, entryCount) { entry, _, _, _ ->
+                checkCancelled()
+                validateEntry(entry)
+                total += entry.size
+                require(total <= ArchiveLimits.MAX_TOTAL_BYTES) { "ZIP total size limit exceeded" }
+                require(!map.containsKey(entry.name)) { "Duplicate ZIP entry" }
                 map[entry.name] = EntryMetadata(entry, entry.entryOffset)
             }
             entriesMetadata = map
@@ -52,6 +65,10 @@ class RemoteZipCore(
     }
 
     fun restore(eocd: Long, central: Long, es: List<ZipEntry>) {
+        validateDirectory(eocd, central, es.size)
+        es.forEach(::validateEntry)
+        require(es.sumOf { it.size } <= ArchiveLimits.MAX_TOTAL_BYTES) { "ZIP total size limit exceeded" }
+        require(es.map { it.name }.distinct().size == es.size) { "Duplicate ZIP entry" }
         eocdOffset = eocd; centralOffset = central
         entriesMetadata = HashMap<String, EntryMetadata>(es.size * 2).apply {
             es.forEach { e ->
@@ -71,7 +88,7 @@ class RemoteZipCore(
      */
     fun readDecompressed(m: EntryMetadata): ByteArray {
         val chunk = readCompressed(m)
-        return when (m.entry.method) {
+        val result = when (m.entry.method) {
             0 -> if (chunk.offset == 0 && chunk.length == chunk.bytes.size) {
                 chunk.bytes
             } else {
@@ -85,44 +102,74 @@ class RemoteZipCore(
 
             else -> throw ZipIOException("Unknown compression method ${m.entry.method}: ${m.entry.name}")
         }
+        require(result.size.toLong() == m.entry.size) { "Invalid ZIP expanded size" }
+        if (m.entry.crc >= 0) require(zipCrc32(result) == m.entry.crc) { "ZIP CRC mismatch" }
+        checkCancelled()
+        return result
+    }
+
+    private fun validateDirectory(eocd: Long, central: Long, count: Int) {
+        require(fileSize in 0..ArchiveLimits.MAX_INPUT_BYTES.toLong()) { "ZIP input size limit exceeded" }
+        require(central >= 0 && eocd >= central && eocd <= ArchiveLimits.MAX_INPUT_BYTES &&
+            (fileSize == 0L || eocd <= fileSize - ZipConstants.ENDHDR)) { "Invalid ZIP directory range" }
+        require(count in 0..ArchiveLimits.MAX_ENTRIES && count.toLong() * ZipConstants.CENHDR <= eocd - central) {
+            "Invalid ZIP entry count"
+        }
+    }
+
+    private fun validateEntry(entry: ZipEntry) {
+        require(entry.compressedSize in 0..ArchiveLimits.MAX_INPUT_BYTES.toLong() &&
+            entry.size in 0..ArchiveLimits.MAX_ENTRY_BYTES.toLong()) { "ZIP entry size limit exceeded" }
+        ArchiveLimits.checkEntry(entry.compressedSize.toInt(), entry.size.toInt())
+        ArchiveLimits.checkPath(entry.name)
+        if (entry.method != 0 && entry.method != 8) throw ZipIOException("Unknown compression method ${entry.method}: ${entry.name}")
+        require(entry.flags and 1 == 0) { "Encrypted ZIP entry is unsupported" }
+        if (entry.method == 0) require(entry.compressedSize == entry.size) { "Invalid STORED entry size" }
+    }
+
+    private fun readExact(offset: Long, length: Int): ByteArray {
+        checkCancelled()
+        check(!closed) { "Closed: $name" }
+        val limit = if (fileSize > 0) fileSize else ArchiveLimits.MAX_INPUT_BYTES.toLong()
+        require(offset >= 0 && length >= 0 && offset <= limit && length.toLong() <= limit - offset) {
+            "Invalid ZIP data range"
+        }
+        return source.readRange(offset, length, fileSize).also {
+            require(it.size == length) { "Truncated ZIP input" }
+        }
     }
 
     /** 读 entry 原始压缩数据（不解压），首次读附带解析 LOC 头并缓存数据区偏移 */
     fun readCompressed(m: EntryMetadata): Chunk {
+        checkCancelled()
         val entry = m.entry
-        val cSize = entry.compressedSize.takeIf { it <= Int.MAX_VALUE }?.toInt()
-            ?: throw ZipIOException("Too large")
-
-        m.dataOffset?.let { dOff ->
-            val bytes = source.readRange(dOff, cSize, fileSize)
-            return Chunk(bytes, 0, bytes.size)
+        validateEntry(entry)
+        val cSize = entry.compressedSize.toInt()
+        val dataOffset = m.dataOffset ?: run {
+            val entryOffset = m.entryOffset.toLong() and 0xffffffffL
+            require(entryOffset <= centralOffset - ZipConstants.LOCHDR) { "Invalid ZIP local header range" }
+            val header = readExact(entryOffset, ZipConstants.LOCHDR)
+            require(ZipConstants.readLeInt(header, 0) == ZipConstants.LOCSIG.toInt()) { "Invalid ZIP local signature" }
+            require(ZipConstants.readLeShort(header, 6) and 1 == 0 &&
+                ZipConstants.readLeShort(header, 8) == entry.method) { "Invalid ZIP local method or flags" }
+            val nameLength = ZipConstants.readLeShort(header, ZipConstants.LOCNAM)
+            val extraLength = ZipConstants.readLeShort(header, ZipConstants.LOCEXT)
+            entryOffset + ZipConstants.LOCHDR + nameLength + extraLength
         }
-
-        val entryOffset = m.entryOffset.toLong() and 0xffffffffL
-        val totalToRead = ZipConstants.LOCHDR + entry.name.length + 128 + cSize
-        val fullData = source.readRange(entryOffset, totalToRead, fileSize)
-
-        if (fullData.size < ZipConstants.LOCHDR) throw ZipIOException("Read Header Error")
-
-        val realExtraLen = ZipConstants.readLeShort(fullData, ZipConstants.LOCEXT)
-        val realDataOff = ZipConstants.LOCHDR + entry.name.length + realExtraLen
-        m.dataOffset = entryOffset + realDataOff
-
-        val dataInBuffer = fullData.size - realDataOff
-        return if (dataInBuffer >= cSize) {
-            Chunk(fullData, realDataOff, cSize)
-        } else {
-            // 补读起点基于真实数据偏移：dataInBuffer<=0 时 buffer 尾尚未到数据区，
-            // 不能从 entryOffset+fullData.size 接续（会把 extra 尾部当数据读）
-            val available = maxOf(0, dataInBuffer)
-            val missing = cSize - available
-            val rest = source.readRange(entryOffset + realDataOff + available, missing, fileSize)
-            val combined = ByteArray(cSize)
-            if (available > 0) {
-                fullData.copyInto(combined, 0, realDataOff, realDataOff + available)
-            }
-            rest.copyInto(combined, available, 0, rest.size)
-            Chunk(combined, 0, combined.size)
+        require(dataOffset >= 0 && dataOffset <= centralOffset && cSize.toLong() <= centralOffset - dataOffset) {
+            "Invalid ZIP compressed data range"
         }
+        val bytes = readExact(dataOffset, cSize)
+        m.dataOffset = dataOffset
+        return Chunk(bytes, 0, bytes.size)
     }
+}
+
+private fun zipCrc32(bytes: ByteArray): Long {
+    var crc = -1
+    for (byte in bytes) {
+        crc = crc xor (byte.toInt() and 0xff)
+        repeat(8) { crc = (crc ushr 1) xor (if (crc and 1 != 0) 0xedb88320.toInt() else 0) }
+    }
+    return crc.inv().toLong() and 0xffffffffL
 }

@@ -26,6 +26,14 @@ private fun tar(size: String = "00000000001", payloadSize: Int = 512): ByteArray
 }
 
 fun main() {
+    val positional = io.legado.app.web.api.WebApiRequest("GET", "/", emptyMap(), null, emptyMap(), null, emptyMap())
+    verify(positional.method == "GET" && !positional.trustedLocalCall)
+    val named = io.legado.app.web.api.WebApiRequest(method = "POST", path = "/save", postData = "{}", headers = mapOf("host" to "localhost"))
+    verify(named.postData == "{}" && !named.trustedLocalCall)
+
+    verify(isInternalHttpHeader("x-LEGADO-cookie-SCOPE"))
+    verify(isInternalHttpHeader("cOoKiEjAr"))
+    verify(!isInternalHttpHeader("Authorization"))
     val target = CookieTarget.parse("https://books.example.com/account/page")!!
     verify(cookieMatches(target, "books.example.com", "/account", true, 2000, 1000))
     verify(!cookieMatches(target, "example.com", "/", false, null, 1000)) // host-only

@@ -57,12 +57,36 @@ object IosCookieStore : CookieStoreProvider, StructuredCookieStore {
         }.sortedByDescending { it.path.length }
     }
 
-    /** Replace this host's snapshot, including an empty snapshot after logout. Never relabel an IdP cookie. */
-    fun syncFromWebView(sourceKey: String?, url: String, cookies: List<NSHTTPCookie>) = synchronized(lock) {
-        val target = CookieTarget.parse(url) ?: return@synchronized
+    /** Full private-WebView seed; WebKit applies domain/path/Secure rules at request time. */
+    fun cookiesForWebView(sourceKey: String?, url: String): List<NSHTTPCookie> = synchronized(lock) {
+        jars[scope(sourceKey, url)].orEmpty().filter {
+            it.expiresDate?.timeIntervalSince1970?.let { seconds -> seconds * 1000 > systemCurrentTimeMillis() } != false
+        }
+    }
+
+    /** Reconcile only the injected snapshot; concurrent network/window changes win. */
+    fun syncFromWebView(sourceKey: String?, url: String, cookies: List<NSHTTPCookie>,
+                        baseline: List<NSHTTPCookie>) = synchronized(lock) {
         val key = scope(sourceKey, url)
-        val retained = jars[key].orEmpty().filterNot { cookieDomainMatches(target.host, it.domain) }
-        jars[key] = (retained + cookies.filter { cookieDomainMatches(target.host, it.domain) }).takeLast(3000)
+        val current = jars[key].orEmpty().toMutableList()
+        fun identity(c: NSHTTPCookie) = Triple(c.name, c.domain, c.path)
+        val before = baseline.associateBy(::identity)
+        val after = cookies.associateBy(::identity)
+        (before.keys + after.keys).forEach { id ->
+            val old = before[id]
+            val existing = current.find { identity(it) == id }
+            // Do not erase/overwrite credentials refreshed by another request since injection.
+            if (existing?.properties == old?.properties) {
+                current.removeAll { identity(it) == id }
+                after[id]?.let { current.add(it) }
+            }
+        }
+        jars[key] = current.takeLast(3000)
+        persist()
+    }
+
+    override fun clearCookiesForSource(sourceKey: String) = synchronized(lock) {
+        jars.remove(sourceKey)
         persist()
     }
 

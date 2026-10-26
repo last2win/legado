@@ -383,7 +383,7 @@ class IosVideoPlayerController(
         // cookieJarHeader 是给 legado 自己的 HTTP 栈的开关伪头, 喂进 AVURLAsset 会被
         // 当真实请求头发出 —— 与 commonMain AnalyzeUrlCore.resolveMedia() 同一剔除口径
         // (不直接调 resolveMedia: 它内部的 setCookie 会在组合期同步读库)
-        val realHeaders = headers.filterKeys { key -> key != cookieJarHeader }
+        val realHeaders = headers.filterKeys { key -> !io.legado.app.help.http.isInternalHttpHeader(key) }
         if (url == loadedUrl && realHeaders == loadedHeaders) return
         // 换源前记下用户意图: 首次装载 (守卫为空) 与出错重试后的重新装载照旧播,
         // 暂停态换源 (如切清晰度) 不得被强制恢复播放

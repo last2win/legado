@@ -35,6 +35,25 @@ class StreamDecompressorTest {
         override fun getSource(): BaseSource? = null
     }
 
+    @Test
+    fun scriptEntryRejectsCompressionBombsInEveryFormat() {
+        val bomb = ByteArray(2 * 1024 * 1024)
+        listOf("gzip" to gzip(bomb), "zlib" to zlib(bomb), "deflate" to deflateRaw(bomb)).forEach { (format, bytes) ->
+            assertNull(format, ext.decompressBytes(bytes, format))
+        }
+    }
+
+    @Test
+    fun cancellationDuringExpansionPropagates() {
+        var checks = 0
+        assertThrows(kotlinx.coroutines.CancellationException::class.java) {
+            StreamDecompressor.decompress(gzip(ByteArray(2 * 1024 * 1024)), "gzip") {
+                if (++checks == 3) throw kotlinx.coroutines.CancellationException("cancel")
+            }
+        }
+        assertEquals(3, checks)
+    }
+
     // --- 三格式解压 ---
 
     @Test

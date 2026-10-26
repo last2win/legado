@@ -775,9 +775,10 @@ private fun KmpRequest.prepareForSend(): KmpRequest {
 
     if (header(cookieJarHeader) != null) {
         builder.removeHeader(cookieJarHeader)
-        return CookieJarBridgeHolder.get()?.loadRequest(builder.build()) ?: builder.build()
+        return (CookieJarBridgeHolder.get()?.loadRequest(builder.build()) ?: builder.build())
+            .newBuilder().removeHeader(cookieScopeHeader).build()
     }
-    return builder.build()
+    return builder.removeHeader(cookieScopeHeader).build()
 }
 
 /** 默认超时 (对齐 Android HttpHelper: connect/read/write/call 均 15s) */

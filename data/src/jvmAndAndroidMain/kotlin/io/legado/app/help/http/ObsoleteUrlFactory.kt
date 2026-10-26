@@ -384,6 +384,7 @@ class ObsoleteUrlFactory(private var client: OkHttpClient) : URLStreamHandlerFac
                         ?: requestBuilder.build()
                 }
 
+                request1 = request1.newBuilder().removeHeader(cookieScopeHeader).build()
                 val networkResponse = chain.proceed(request1)
 
                 if (enableCookieJar) {

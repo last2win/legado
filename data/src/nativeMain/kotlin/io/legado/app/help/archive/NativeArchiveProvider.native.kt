@@ -101,7 +101,7 @@ object NativeArchiveProvider : ArchiveProvider {
     private fun unTarToPath(tar: File, destDir: String) {
         require(tar.length() <= ArchiveLimits.MAX_TOTAL_BYTES) { "TAR input size limit exceeded" }
         val data = tar.readBytes()
-        TarReader.forEach(data, { JsEngines.get().currentContext()?.ensureActive() }) { name, type, start, end ->
+        TarReader.forEach(data, { JsEngines.jsContextOrNull?.ensureActive() }) { name, type, start, end ->
             when {
                 type == TYPE_DIR -> File((destDir + "/" + name).trimEnd('/')).mkdirs()
                 type in REGULAR_TYPES -> {
@@ -120,7 +120,7 @@ object NativeArchiveProvider : ArchiveProvider {
         try {
             val out = Buffer()
             while (true) {
-                JsEngines.get().currentContext()?.ensureActive()
+                JsEngines.jsContextOrNull?.ensureActive()
                 val remaining = ArchiveLimits.MAX_TOTAL_BYTES - out.size
                 val read = gz.read(out, minOf(DEFAULT_CHUNK, remaining + 1))
                 if (read == -1L) break
@@ -136,7 +136,7 @@ object NativeArchiveProvider : ArchiveProvider {
     override fun getByteArrayContent(bytes: ByteArray, path: String): ByteArray? {
         return runCatching {
             require(bytes.size <= ArchiveLimits.MAX_INPUT_BYTES) { "Archive input size limit exceeded" }
-            val zip = RemoteZipCore(bytesRangedSource(bytes), "bytes", bytes.size.toLong())
+            val zip = RemoteZipCore(bytesRangedSource(bytes), "bytes", bytes.size.toLong()) { JsEngines.jsContextOrNull?.ensureActive() }
             try {
                 zip.ensureMeta()[path]?.let {
                     require(it.entry.size in 0..ArchiveLimits.MAX_ENTRY_BYTES.toLong()) { "ZIP entry size limit exceeded" }
@@ -169,7 +169,7 @@ object NativeArchiveProvider : ArchiveProvider {
         return runCatching {
             require(file.length() <= ArchiveLimits.MAX_INPUT_BYTES) { "Archive input size limit exceeded" }
             val bytes = file.readBytes()
-            val zip = RemoteZipCore(bytesRangedSource(bytes), name, bytes.size.toLong())
+            val zip = RemoteZipCore(bytesRangedSource(bytes), name, bytes.size.toLong()) { JsEngines.jsContextOrNull?.ensureActive() }
             try {
                 zip.ensureMeta().values
                     .map { it.entry.name }

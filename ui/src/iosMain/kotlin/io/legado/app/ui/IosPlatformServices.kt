@@ -450,7 +450,7 @@ private object IosMediaService : MediaService {
         val options: Map<Any?, Any?>? = if (headers.isEmpty()) {
             null
         } else {
-            mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to headers)
+            mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to headers.filterKeys { !io.legado.app.help.http.isInternalHttpHeader(it) })
         }
         stopMedia()
         val item = AVPlayerItem(asset = AVURLAsset(nsUrl, options))

@@ -38,18 +38,7 @@ internal class SourceHeaderNetworkClient(
     private val delegate: NetworkClient,
     /** (sourceOrigin, 原始 url) → 解析后请求对象 (含真实 url、请求头与书源对象)。各端 `resolveSourceRequest` 实现。 */
     private val resolve: suspend (sourceOrigin: String, url: String) -> ResolvedSourceRequest,
-    /**
-     * 是否保留 cookieJar 伪头。
-     *
-     * - true (android/desktop): 伪头由 app 拦截器摘除 (jvmAndAndroidMain/help/http/HttpHelper.kt
-     *   的 CookieJarBridgeHolder.loadRequest/saveResponse), 摘除前用它识别「本次访问结束即落库 cookie」,
-     *   必须保留。
-     * - false (iOS): 不剔除会把 `CookieJar: 1` 当真请求头发到服务器。注意原因**不是**没注册桥
-     *   (IosProviderRegistry 已调 registerSharedCookieJarBridge), 而是该桥只挂在
-     *   KmpHttpClient.newCall → executeKtor → KmpRequest.prepareForSend 路径上 (那里摘伪头 +
-     *   注入 Cookie); 而 Coil 图片链用 `ktorClient.asNetworkClient()` 直接走 Ktor 插件链,
-     *   不经 prepareForSend, 没人摘 → 只能在本层剔除。
-     */
+    /** Retain internal metadata only when the delegate uses KmpHttpClient's controlled transport. */
     private val keepCookieJarMarker: Boolean,
 ) : NetworkClient {
 
@@ -64,7 +53,7 @@ internal class SourceHeaderNetworkClient(
         val resolved = resolvedRequest.headers
         val source = resolvedRequest.source
         val sourceHeaders =
-            if (keepCookieJarMarker) resolved else resolved - cookieJarHeader
+            if (keepCookieJarMarker) resolved else resolved.filterKeys { !io.legado.app.help.http.isInternalHttpHeader(it) }
         val headers = if (url == request.url && sourceHeaders.isEmpty()) {
             request.headers
         } else {

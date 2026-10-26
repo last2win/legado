@@ -214,7 +214,7 @@ private class IosBackstageWebViewHandle(
                 val nsUrl = NSURL.URLWithString(urlStr.canonicalizeUri())
                     ?: throw NoStackTraceException("url解析失败: $urlStr")
                 val request = NSMutableURLRequest(uRL = nsUrl)
-                headerMap?.filterKeys { !it.equals(cookieScopeHeader, true) }?.forEach { (name, value) ->
+                headerMap?.filterKeys { !isInternalHttpHeader(it) }?.forEach { (name, value) ->
                     request.setValue(value, forHTTPHeaderField = name)
                 }
                 webView.loadRequest(request)
@@ -325,12 +325,14 @@ private class IosBackstageWebViewHandle(
         }
 
     /** 加载前把业务层 cookie 注入 WKHTTPCookieStore, 替代安卓全局 CookieManager 的隐式共享。 */
+    private var cookieSession: IosWebViewCookieSession? = null
+
     private suspend fun injectCookies(webView: WKWebView) {
-        val target = url ?: return
-        val store = webView.configuration.websiteDataStore.httpCookieStore
-        IosCookieStore.cookiesForSource(tag, target).forEach { nsCookie ->
-            suspendCancellableCoroutine<Unit> { block ->
-                store.setCookie(nsCookie) { if (block.isActive) block.resume(Unit) }
+        val session = IosWebViewCookieSession(tag, url.orEmpty())
+        cookieSession = session
+        suspendCancellableCoroutine<Unit> { block ->
+            session.seed(webView.configuration.websiteDataStore.httpCookieStore) {
+                if (block.isActive) block.resume(Unit)
             }
         }
     }
@@ -339,7 +341,9 @@ private class IosBackstageWebViewHandle(
     private fun harvestCookies(webView: WKWebView) {
         val pageUrl = webView.URL?.absoluteString ?: return
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { all ->
-            IosCookieStore.syncFromWebView(tag, pageUrl, all.orEmpty().filterIsInstance<NSHTTPCookie>())
+            if (webView.URL?.absoluteString == pageUrl) {
+                cookieSession?.sync(all.orEmpty().filterIsInstance<NSHTTPCookie>())
+            }
         }
     }
 

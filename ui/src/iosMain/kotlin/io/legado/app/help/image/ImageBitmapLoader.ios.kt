@@ -12,9 +12,8 @@ import io.legado.app.model.script.runScriptWithContext
 import io.legado.app.utils.File
 import io.legado.app.utils.ImageUtils
 import io.legado.app.utils.canonicalizeUri
-import io.ktor.client.request.get
-import io.ktor.client.statement.bodyAsBytes
-import io.ktor.http.isSuccess
+import io.legado.app.help.http.KmpRequestBuilder
+import io.legado.app.help.http.await
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import org.jetbrains.skia.Color
@@ -161,14 +160,18 @@ actual class ImageBitmapLoader actual constructor() {
 
     /** 简单 GET 取字节流 (本地书 / 无书源用); 非 2xx 进失败表不再重试。 */
     private suspend fun downloadBytesSimple(url: String, recordFailure: Boolean): ByteArray? {
-        val client = OkHttpClientProviders.get().okHttpClient.ktorClient ?: return null
+        val client = OkHttpClientProviders.get().okHttpClient
         return runCatching {
-            val response = client.get(url.canonicalizeUri())
-            if (!response.status.isSuccess()) {
-                if (recordFailure) markIosFailUrl(null, url)
-                null
-            } else {
-                response.bodyAsBytes()
+            val response = client.newCall(KmpRequestBuilder().url(url.canonicalizeUri()).build()).await()
+            try {
+                if (!response.isSuccessful) {
+                    if (recordFailure) markIosFailUrl(null, url)
+                    null
+                } else {
+                    response.body.bytes()
+                }
+            } finally {
+                response.close()
             }
         }.getOrNull()
     }

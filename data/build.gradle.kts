@@ -585,7 +585,10 @@ kotlin {
                 }
             }
             if (enableIosTarget) {
-                val iosTest = maybeCreate("iosTest").apply { dependsOn(nativeTest) }
+                val iosTest = maybeCreate("iosTest").apply {
+                    dependsOn(nativeTest)
+                    dependencies { implementation(libs.ktor.client.mock) }
+                }
                 maybeCreate("iosArm64Test").dependsOn(iosTest)
                 maybeCreate("iosSimulatorArm64Test").dependsOn(iosTest)
             }

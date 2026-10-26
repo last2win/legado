@@ -1,5 +1,8 @@
 package io.legado.app.model.fileBook
 
+import io.legado.app.help.storage.ArchiveLimits
+import io.legado.app.model.script.JsEngines
+
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.BookType
 import io.legado.app.constant.PreferKey
@@ -108,8 +111,9 @@ class NativeFileBookAccessor : FileBookAccessor {
             throw NoStackTraceException("iOS/鸿蒙端仅支持 zip/cbz 压缩包导入, 不支持 ${archiveFile.name}")
         }
         val books = mutableListOf<Book>()
+        require(archiveFile.length() in 0..ArchiveLimits.MAX_INPUT_BYTES.toLong()) { "ZIP input size limit exceeded" }
         val bytes = archiveFile.readBytes()
-        val zip = RemoteZipCore(bytesRangedSource(bytes), archiveFile.name, bytes.size.toLong())
+        val zip = RemoteZipCore(bytesRangedSource(bytes), archiveFile.name, bytes.size.toLong()) { JsEngines.jsContextOrNull?.ensureActive() }
         try {
             for (meta in zip.ensureMeta().values) {
                 val entry = meta.entry
@@ -162,8 +166,9 @@ class NativeFileBookAccessor : FileBookAccessor {
         if (!archiveFile.name.endsWith(".zip", true)) {
             throw NoStackTraceException("iOS/鸿蒙端仅支持 zip/cbz 压缩包, 不支持 ${archiveFile.name}")
         }
+        require(archiveFile.length() in 0..ArchiveLimits.MAX_INPUT_BYTES.toLong()) { "ZIP input size limit exceeded" }
         val bytes = archiveFile.readBytes()
-        val zip = RemoteZipCore(bytesRangedSource(bytes), archiveFile.name, bytes.size.toLong())
+        val zip = RemoteZipCore(bytesRangedSource(bytes), archiveFile.name, bytes.size.toLong()) { JsEngines.jsContextOrNull?.ensureActive() }
         return try {
             zip.ensureMeta().values.any {
                 !it.entry.name.endsWith("/") && FileBook.isBookFile(it.entry.name)

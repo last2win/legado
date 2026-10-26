@@ -4,11 +4,10 @@ package io.legado.app.ui.browser
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.UIKitView
-import io.legado.app.help.http.IosCookieStore
+import io.legado.app.help.http.IosWebViewCookieSession
 import io.legado.app.utils.canonicalizeUri
 import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSHTTPCookie
@@ -44,13 +43,13 @@ fun IosWebViewSlot(
     modifier: Modifier = Modifier,
     callbacks: WebViewCallbacks = WebViewCallbacks(),
 ) {
-    val currentConfig = rememberUpdatedState(config)
     val webView = remember(config.sourceKey) {
         WKWebView(CGRectMake(0.0, 0.0, 0.0, 0.0), WKWebViewConfiguration().apply {
             websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore()
         })
     }
-    val navDelegate = remember(webView, callbacks) { WebViewNavDelegate(callbacks) { currentConfig.value } }
+    val cookies = remember(webView) { IosWebViewCookieSession(config.sourceKey, config.url) }
+    val navDelegate = remember(webView, callbacks) { WebViewNavDelegate(callbacks, cookies) }
     // WKWebView.UIDelegate 同为 weak, 一并 remember 持强引用
     val uiDelegate = remember { WebViewUiDelegate(callbacks) }
 
@@ -68,15 +67,15 @@ fun IosWebViewSlot(
             if (html == null) {
                 val cur = view.URL?.absoluteString
                 if (cur != config.url) {
-                    loadWithHeaders(view, config)
+                    cookies.seed(view.configuration.websiteDataStore.httpCookieStore) { loadWithHeaders(view, config) }
                 }
             } else if (view.tag != HTML_LOADED_TAG) {
                 view.tag = HTML_LOADED_TAG
-                view.loadHTMLString(
+                cookies.seed(view.configuration.websiteDataStore.httpCookieStore) { view.loadHTMLString(
                     html,
                     baseURL = config.url.takeIf { it.isNotBlank() }
                         ?.let { NSURL.URLWithString(it.canonicalizeUri()) },
-                )
+                ) }
             }
         },
     )
@@ -86,19 +85,9 @@ fun IosWebViewSlot(
 private fun loadWithHeaders(webView: WKWebView, config: WebViewConfig) {
     val nsUrl = NSURL.URLWithString(config.url.canonicalizeUri()) ?: return
     val request = NSMutableURLRequest(uRL = nsUrl)
-    config.headerMap.filterKeys { !it.equals(io.legado.app.help.http.cookieScopeHeader, true) }
+    config.headerMap.filterKeys { !io.legado.app.help.http.isInternalHttpHeader(it) }
         .forEach { (key, value) -> request.setValue(value, forHTTPHeaderField = key) }
-    val cookies = IosCookieStore.cookiesForSource(config.sourceKey, config.url)
-    if (cookies.isEmpty()) {
-        webView.loadRequest(request)
-    } else {
-        var remaining = cookies.size
-        cookies.forEach { cookie ->
-            webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
-                if (--remaining == 0) webView.loadRequest(request)
-            }
-        }
-    }
+    webView.loadRequest(request)
 }
 
 /** html 模式已加载标记 (避免每次重组重复 loadHTMLString); UIView.tag 为 NSInteger (Long)。 */
@@ -112,18 +101,17 @@ private const val HTML_LOADED_TAG = 1L
  */
 private class WebViewNavDelegate(
     private val callbacks: WebViewCallbacks,
-    private val config: () -> WebViewConfig,
+    private val cookieSession: IosWebViewCookieSession,
 ) : NSObject(), WKNavigationDelegateProtocol {
     override fun webView(
         webView: WKWebView,
         didFinishNavigation: WKNavigation?,
     ) {
         val url = webView.URL?.absoluteString ?: return
-        val cfg = config()
         val store = webView.configuration.websiteDataStore.httpCookieStore
         store.getAllCookies { cookies ->
             if (webView.URL?.absoluteString != url) return@getAllCookies
-            IosCookieStore.syncFromWebView(cfg.sourceKey, url, cookies.orEmpty().filterIsInstance<NSHTTPCookie>())
+            cookieSession.sync(cookies.orEmpty().filterIsInstance<NSHTTPCookie>())
             callbacks.onPageFinished?.invoke(url)
         }
         // 页面 URL 状态同步 (页面内跳转后菜单取最新链接)

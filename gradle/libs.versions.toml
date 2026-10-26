@@ -234,6 +234,7 @@ gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
 okio = { module = "com.squareup.okio:okio", version.ref = "okio" }
 kmp-zip-okio = { module = "no.synth:kmp-zip-okio", version.ref = "kmp-zip" }
 epub4kmp-core = { module = "com.darkrockstudios:epub4kmp-core", version.ref = "epub4kmp" }
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 ktor-client-darwin = { module = "io.ktor:ktor-client-darwin", version.ref = "ktor" }

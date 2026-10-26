@@ -161,7 +161,7 @@ class IosHttpTtsPlayer : HttpTtsPlayer {
         // 书源 headers 经 AVURLAssetHTTPHeaderFieldsKey 注入
         // (该 key 常量未随 cinterop 平台库暴露, 用同名字面量 key)
         val options: Map<Any?, Any?>? = if (headers.isEmpty()) null else {
-            mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to headers)
+            mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to headers.filterKeys { !io.legado.app.help.http.isInternalHttpHeader(it) })
         }
         val newItem = AVPlayerItem(asset = AVURLAsset(nsUrl, options))
         item = newItem

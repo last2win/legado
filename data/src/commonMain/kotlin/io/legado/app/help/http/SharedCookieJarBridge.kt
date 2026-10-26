@@ -56,7 +56,7 @@ class SharedCookieJarBridge : CookieJarBridge {
                 .header("Cookie", newCookie)
                 .build()
         } catch (e: Exception) {
-            store.removeCookie(urlString)
+            store.removeCookieForSource(request.header(cookieScopeHeader), urlString)
             val msg = "设置cookie出错，已清除cookie $domain"
             AppLog.put(msg, e)
             request

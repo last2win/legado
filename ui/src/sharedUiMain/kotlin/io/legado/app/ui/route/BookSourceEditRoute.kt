@@ -98,7 +98,7 @@ fun BookSourceEditRoute(
                 // SourceConfig 已下沉 commonMain, 直接调用 (替代 app 端 SourceConfig.removeSource)
                 sourceConfigRemover = { url -> SourceConfig.removeSource(url) },
                 // CookieStoreProviders 已下沉 commonMain (替代 app 端 CookieStore.removeCookie)
-                cookieRemover = { url -> CookieStoreProviders.get()?.removeCookie(url) },
+                cookieRemover = { url -> CookieStoreProviders.get()?.clearCookiesForSource(url) },
                 nonNullNameUrlMessage = { nonNullNameUrlMessage },
             )
         }

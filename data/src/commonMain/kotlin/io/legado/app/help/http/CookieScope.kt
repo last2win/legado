@@ -46,3 +46,7 @@ fun cookieMatches(target: CookieTarget, domain: String, path: String, secure: Bo
     return target.path == cookiePath || (target.path.startsWith(cookiePath) &&
         (cookiePath.endsWith('/') || target.path.getOrNull(cookiePath.length) == '/'))
 }
+
+/** Internal routing metadata must never be forwarded to an origin or native media stack. */
+fun isInternalHttpHeader(name: String): Boolean =
+    name.equals(cookieScopeHeader, true) || name.equals("CookieJar", true)

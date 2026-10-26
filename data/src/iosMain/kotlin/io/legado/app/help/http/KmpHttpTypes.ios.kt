@@ -45,12 +45,6 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.reflect.KClass
 import kotlin.time.Duration
-import okio.Buffer
-import okio.GzipSource
-import okio.Inflater
-import okio.InflaterSource
-import okio.buffer
-import okio.use
 
 /**
  * OkHttp 跨平台抽象层 iOS actual 实现 (基于 Ktor Darwin engine)。
@@ -930,7 +924,7 @@ private fun KmpRequest.toKtorHttpRequestBuilder(): HttpRequestBuilder {
             "OPTIONS" -> HttpMethod.Options
             else -> HttpMethod(this@toKtorHttpRequestBuilder.method)
         }
-        this@toKtorHttpRequestBuilder.headers.forEach { (name, value) ->
+        this@toKtorHttpRequestBuilder.headers.filterNot { isInternalHttpHeader(it.first) }.forEach { (name, value) ->
             header(name, value)
         }
         this@toKtorHttpRequestBuilder.body?.let { rb ->
@@ -981,21 +975,16 @@ private fun KmpRequest.prepareForSend(): KmpRequest {
  *
  * okio 3.x 的 GzipSource / InflaterSource 在 Kotlin/Native 可用 (纯 Kotlin 实现);
  * deflate 用 nowrap=true (raw deflate, 与 Android java.util.zip.Inflater(true) 一致)。
- * 解压失败回退原字节 (与 OkHttp 解压失败抛异常不同, 尽力而为)。
+ * 与脚本解压共享输出预算；损坏或超限的响应明确失败。
  */
 private fun decompressResponseBody(bytes: ByteArray, contentEncoding: String?): ByteArray {
-    return when (contentEncoding?.lowercase()) {
-        "gzip", "x-gzip" -> runCatching {
-            GzipSource(Buffer().write(bytes)).buffer().use { it.readByteArray() }
-        }.getOrDefault(bytes)
-
-        "deflate" -> runCatching {
-            InflaterSource(Buffer().write(bytes), Inflater(true)).buffer()
-                .use { it.readByteArray() }
-        }.getOrDefault(bytes)
-
-        else -> bytes
+    val format = when (contentEncoding?.lowercase()) {
+        "gzip", "x-gzip" -> "gzip"
+        "deflate" -> "deflate"
+        else -> return bytes
     }
+    return io.legado.app.help.compress.StreamDecompressor.decompress(bytes, format)
+        ?: throw okio.IOException("Invalid or oversized compressed HTTP response")
 }
 
 /**

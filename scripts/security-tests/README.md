@@ -60,10 +60,11 @@ ssh -N -L 5901:127.0.0.1:15900 <operator>@<gateway>
 export JAVA_HOME=/path/to/jdk
 export KOTLIN_COMPILER_CLASSPATH='/path/to/kotlinc/lib/*'
 export KOTLIN_STDLIB=/path/to/kotlinc/lib/kotlin-stdlib.jar
+# 按脚本头部说明提供 okio、coroutines、serialization-core、JUnit 4、Hamcrest 的 jar。
+export SECURITY_TEST_DEPS=/path/to/security-test-dependencies
 scripts/security-tests/run.sh
 
-# 按脚本头部说明提供 nanohttpd、okio、coroutines、serialization 的 jar。
-export SECURITY_TEST_DEPS=/path/to/security-test-dependencies
+# HTTP 测试另需 nanohttpd、nanohttpd-websocket、serialization-json。
 scripts/security-tests/run-transport.sh
 ```
 
@@ -75,7 +76,30 @@ scripts/security-tests/run-transport.sh
 ./gradlew :data:iosSimulatorArm64Test -PenableIosTarget=true
 ```
 
-完整 JVM Gradle 验证尝试了 `:data:jvmTest :core:jvmTest`。项目固定的 Gradle 9.6.0 分发包在 wrapper 重定向及官方直接地址下载时均超时；未更换项目版本或声称完整构建通过。Android、iOS、鸿蒙端的编译与设备回归仍需在对应工具链完成，重点包括 Cookie 登录/注销/重定向、双书源隔离、异常导入及并发运行时关闭。
+上一轮本地完整 JVM Gradle 验证尝试了 `:data:jvmTest :core:jvmTest`。项目固定的 Gradle 9.6.0 分发包在 wrapper 重定向及官方直接地址下载时均超时；未更换项目版本或声称完整构建通过。Android、iOS、鸿蒙端的编译与设备回归仍需在对应工具链完成，重点包括 Cookie 登录/注销/重定向、双书源隔离、异常导入及并发运行时关闭。
 
 
 参考规范：[Apple NSHTTPCookie domain](https://developer.apple.com/documentation/foundation/httpcookie/domain)、[RFC 6265](https://www.rfc-editor.org/rfc/rfc6265.html)、[Ktor Darwin 配置](https://api.ktor.io/3.5.x/ktor-client-darwin/io.ktor.client.engine.darwin/-darwin-client-engine-config/index.html)。
+
+## 第二轮修复与验证（2026-10-27）
+
+上一提交 `42664107b` 的 [Test Build](https://github.com/last2win/legado/actions/runs/40357370970)
+实际失败于生产代码编译；Android 日志明确包含 `JsExtensionsCommon.kt:1151` 的
+`Unresolved reference SecurityException`。本地下载失败与 CI 编译失败是两件事，不能互相替代解释。
+
+- 公共异常改为 `UnsupportedOperationException`。`WebApiRequest.trustedLocalCall` 放在末尾，鸿蒙三个调用改用具名参数。
+- `RemoteZipCore` 在读目录、分配压缩内容前检查范围/溢出/条目数/单条目/总量/压缩比；拒绝短读、STORED 大小不一致及 CRC 不符。Native 导入与本地 CBZ 整读前检查输入长度。JVM 与 Native DEFLATE 均在输出增长时执行上限。
+- 脚本 GZIP/zlib/deflate 入口共享 `ArchiveLimits`，按块计算实际输出并传播取消；iOS HTTP 压缩响应也复用此实现。默认单段输出最多 32 MiB，输入最多 64 MiB，压缩比最多 1000。
+- KSP 生成的对象返回值登记到当前 scope；增加真实 QuickJS 的 `java.get → Response.parse → select/text`、跨 scope 拒绝和关闭用例。
+- 私有 WebView 只注入一次完整有效的书源 Cookie；URL 与 HTML 加载都等待注入完成。快照回写根据初始/上次快照逐项协调，保留其他路径、Secure Cookie 和并发刷新。清除登录态按完整书源分区删除，包括跨站登录域。
+- iOS Coil 和简单图片下载改走 KmpHttpClient 的逐跳策略；音频、视频、WebView、Cronet 及 HTTP 出口按大小写不敏感方式过滤两个内部头。新增 iOS KmpCall 重定向用例，网络引擎使用 MockEngine，验证逐跳 Cookie、跨 origin Authorization 删除与内部头不外发。
+
+本轮本地验证：`run.sh` 通过 81 条边界断言、35 条生产解压入口断言及 24 个原有/扩展 JUnit ZIP 用例；
+`run-transport.sh` 的真实本地 HTTP/WebSocket 和 TLS 握手测试通过。
+异常 ZIP 回归也用上一版 `RemoteZipCore` 做反向检查，旧实现不能通过新增断言。
+独立测试使用 Kotlin 2.2.0 编译生产文件子集，不等于项目 Kotlin 2.3.20 全量编译。
+
+新增 `Security regression checks` 自动工作流：JVM 生产模块编译、项目 ZIP/脚本解压测试；
+macOS 编译 iOS UI、链接并执行 data 模拟器测试。工作流结果必须以当前提交 SHA 为准。
+本机仍无 Xcode，未执行 iOS/QuickJS/MockEngine 用例；未做真机 WebKit 登录、AVPlayer 抓包或完整 IPA 验证。
+本轮再次下载 Gradle 9.6.0 被 GitHub 分发地址连接超时阻断，本地全量编译仍没有通过证据。

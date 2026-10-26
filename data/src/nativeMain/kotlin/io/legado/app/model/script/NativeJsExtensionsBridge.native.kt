@@ -179,8 +179,9 @@ object NativeJsExtensionsBridge {
      * 随每次脚本调用累积; 挂到 scope 后与 [NativeJsEngine] 的 scope 关闭回收同路。
      */
     fun registerScopedObject(obj: Any): Long {
+        val scope = checkNotNull(NativeJsEngine.currentScope()) { "No active script scope" }
         val handle = registerObject(obj)
-        NativeJsEngine.currentScope()?.handles?.add(handle)
+        scope.handles.add(handle)
         return handle
     }
 
@@ -317,7 +318,7 @@ object NativeJsExtensionsBridge {
                 obj,
                 methodId,
                 jsArrayToList(ctx, argsArray),
-                ::registerObject
+                ::registerScopedObject
             )
         if (generated !== NativeDispatchResult.NONE) return nativeResultToJs(ctx, generated)
         // 生成表段 (5000-5999) 未命中 = KSP 漏生成 / jsapi.nativeTargets 配置漂移 / 新增方法没重新生成。

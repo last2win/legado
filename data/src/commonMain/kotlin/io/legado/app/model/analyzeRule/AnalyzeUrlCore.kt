@@ -549,7 +549,7 @@ open class AnalyzeUrlCore(
      */
     fun resolveMedia(): Pair<String, Map<String, String>> {
         val (mediaUrl, headers) = resolveImageRequest()
-        headers.remove(cookieJarHeader)
+        headers.keys.removeAll { io.legado.app.help.http.isInternalHttpHeader(it) }
         return mediaUrl to headers
     }
 

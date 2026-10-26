@@ -963,7 +963,7 @@ interface JsExtensionsCommon {
      */
     fun decompressBytes(data: Any?, format: String): ByteArray? {
         if (data == null) return null
-        return StreamDecompressor.decompress(resolveBytes(data), format)
+        return StreamDecompressor.decompress(resolveBytes(data), format) { jsContextOrNull?.ensureActive() }
     }
 
     /**
@@ -1148,7 +1148,7 @@ interface JsExtensionsCommon {
      * @param zipPath 相对路径
      */
     fun unArchiveFile(zipPath: String): String {
-        throw io.legado.app.exception.SecurityException("Script archive extraction is disabled; use the app import flow")
+        throw UnsupportedOperationException("Script archive extraction is disabled; use the app import flow")
     }
 
     /**

@@ -39,7 +39,9 @@ data class ZipEntry(
     val compressedSize: Long = -1,
     val method: Int = -1,
     val time: Long = -1,
-    val entryOffset: Int = 0
+    val entryOffset: Int = 0,
+    val crc: Long = -1,
+    val flags: Int = 0,
 )
 
 @Serializable
@@ -77,7 +79,9 @@ object ZipEntryReader {
         onEntry: (entry: ZipEntry, nameLen: Int, extraLen: Int, commentLen: Int) -> Unit
     ) {
         var p = 0
+        require(entryCount >= 0 && entryCount.toLong() * ZipConstants.CENHDR <= data.size) { "Invalid ZIP directory count" }
         repeat(entryCount) {
+            require(p <= data.size - ZipConstants.CENHDR) { "Truncated ZIP directory" }
             if (ZipConstants.readLeInt(data, p) != ZipConstants.CENSIG.toInt()) {
                 throw ZipIOException("Wrong Central Sig")
             }
@@ -90,7 +94,11 @@ object ZipEntryReader {
             val commentLen = ZipConstants.readLeShort(data, p + ZipConstants.CENCOM)
             val offset = ZipConstants.readLeInt(data, p + ZipConstants.CENOFF)
 
-            val entryName = data.decodeLatin1(p + ZipConstants.CENHDR, nameLen)
+            require(nameLen + extraLen + commentLen <= data.size - p - ZipConstants.CENHDR) { "Truncated ZIP directory entry" }
+            require(ZipConstants.readLeShort(data, p + 34) == 0) { "Multi-disk ZIP unsupported" }
+            val entryName = if (ZipConstants.readLeShort(data, p + 8) and 0x800 != 0) {
+                data.decodeToString(p + ZipConstants.CENHDR, p + ZipConstants.CENHDR + nameLen)
+            } else data.decodeLatin1(p + ZipConstants.CENHDR, nameLen)
             val entry = ZipEntry(
                 name = entryName,
                 isDirectory = false,
@@ -98,6 +106,8 @@ object ZipEntryReader {
                 size = size.toLong() and 0xffffffffL,
                 compressedSize = csize.toLong() and 0xffffffffL,
                 time = dostime.toLong(),
+                crc = ZipConstants.readLeInt(data, p + 16).toLong() and 0xffffffffL,
+                flags = ZipConstants.readLeShort(data, p + 8),
                 entryOffset = offset
             )
             onEntry(entry, nameLen, extraLen, commentLen)

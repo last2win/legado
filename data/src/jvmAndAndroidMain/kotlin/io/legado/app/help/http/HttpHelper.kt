@@ -97,6 +97,7 @@ private fun createOkHttpClient(): OkHttpClient {
                 request = builder.build()
             }
 
+            request = request.newBuilder().removeHeader(cookieScopeHeader).build()
             val response = chain.proceed(request)
             val url = request.tag(String::class.java) ?: request.url.toString()
             val responseBody = response.body

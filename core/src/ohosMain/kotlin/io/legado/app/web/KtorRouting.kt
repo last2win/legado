@@ -170,12 +170,12 @@ private suspend fun ApplicationCall.toWebApiRequest(): WebApiRequest {
             val result = parseMultipart()
             val mergedQuery = query.toMutableMap()
             result.formFields.forEach { (k, v) -> mergedQuery[k] = v }
-            return WebApiRequest(method, path, mergedQuery, null, result.files, origin, headers)
+            return WebApiRequest(method = method, path = path, query = mergedQuery, files = result.files, origin = origin, headers = headers)
         }
         // JSON / form-urlencoded: 读 raw body (对齐 HttpServer files["postData"])
         val postData = receiveText()
-        return WebApiRequest(method, path, query, postData, emptyMap(), origin, headers)
+        return WebApiRequest(method = method, path = path, query = query, postData = postData, origin = origin, headers = headers)
     }
 
-    return WebApiRequest(method, path, query, null, emptyMap(), origin, headers)
+    return WebApiRequest(method = method, path = path, query = query, origin = origin, headers = headers)
 }
