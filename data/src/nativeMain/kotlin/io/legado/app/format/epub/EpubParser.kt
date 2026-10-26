@@ -85,11 +85,18 @@ object EpubParser {
                 language = it.language,
             )
         }
-        val spine = parsed.spine.getSpineReferences().mapNotNull { resource(it.resource?.href) }
+        // Resolve declared idrefs through our normalized manifest. EPUB4KMP's relative
+        // resource lookup loses references that escape the OPF directory (../chapter.xhtml).
+        val itemRefs = opfDoc.elementsByLocalName("spine").firstOrNull()
+            ?.elementsByLocalName("itemref").orEmpty()
+        val byId = resources.values.filter { it.id != null }.associateBy { it.id }
+        val spine = if (itemRefs.isNotEmpty()) {
+            itemRefs.mapNotNull { byId[it.attr("idref")] }
+        } else parsed.spine.getSpineReferences().mapNotNull { resource(it.resource?.href) }
         check(spine.isNotEmpty()) { "EpubParser: no readable spine resources" }
-        val coverImage = coverImageResource(findCoverImage(opfDoc, opfPath, resources), resources)
-            ?: coverImageResource(resource(parsed.coverImage?.href), resources)
-            ?: coverImageResource(resource(parsed.coverPage?.href), resources)
+        val coverImage = coverImageResource(findCoverImage(opfDoc, opfPath, resources), resources, entries)
+            ?: coverImageResource(resource(parsed.coverImage?.href), resources, entries)
+            ?: coverImageResource(resource(parsed.coverPage?.href), resources, entries)
         val tocResource = findTocResource(opfDoc, resources, version)
         fun chapter(ref: TOCReference): EpubChapter {
             val res = resource(ref.resource?.href)
@@ -203,7 +210,7 @@ object EpubParser {
 
     /** A guide/meta cover may reference an XHTML wrapper rather than an image. */
     private fun coverImageResource(
-        candidate: EpubResource?, resources: Map<String, EpubResource>
+        candidate: EpubResource?, resources: Map<String, EpubResource>, entries: Map<String, ByteArray>
     ): EpubResource? {
         candidate ?: return null
         if (candidate.mediaType?.startsWith("image/") == true) return candidate
@@ -214,8 +221,19 @@ object EpubParser {
                 "image" -> element.attr("href").ifBlank { element.attr("xlink:href") }
                 else -> continue
             }
-            val image = resources[resolvePath(candidate.href, href).substringBefore('#')]
+            val path = resolvePath(candidate.href, href).substringBefore('#')
+            val image = resources[path]
             if (image?.mediaType?.startsWith("image/") == true) return image
+            // Tolerate a cover image omitted from manifest, but only read validated ZIP entries.
+            val mediaType = when (path.substringAfterLast('.').lowercase()) {
+                "jpg", "jpeg" -> "image/jpeg"
+                "png" -> "image/png"
+                "gif" -> "image/gif"
+                "webp" -> "image/webp"
+                "svg" -> "image/svg+xml"
+                else -> continue
+            }
+            entries[path]?.let { return EpubResource(path, mediaType = mediaType, data = it) }
         }
         return null
     }
