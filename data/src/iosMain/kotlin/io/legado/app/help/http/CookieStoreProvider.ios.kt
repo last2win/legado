@@ -14,6 +14,7 @@ import platform.Foundation.NSHTTPCookiePath
 import platform.Foundation.NSHTTPCookieSecure
 import platform.Foundation.NSURL
 import platform.Foundation.NSUserDefaults
+import platform.Foundation.timeIntervalSince1970
 import io.legado.app.utils.PublicSuffixList
 import io.legado.app.utils.systemCurrentTimeMillis
 
