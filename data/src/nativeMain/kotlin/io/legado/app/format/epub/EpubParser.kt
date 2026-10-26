@@ -85,14 +85,7 @@ object EpubParser {
                 language = it.language,
             )
         }
-        // Resolve declared idrefs through our normalized manifest. EPUB4KMP's relative
-        // resource lookup loses references that escape the OPF directory (../chapter.xhtml).
-        val itemRefs = opfDoc.elementsByLocalName("spine").firstOrNull()
-            ?.elementsByLocalName("itemref").orEmpty()
-        val byId = resources.values.filter { it.id != null }.associateBy { it.id }
-        val spine = if (itemRefs.isNotEmpty()) {
-            itemRefs.mapNotNull { byId[it.attr("idref")] }
-        } else parsed.spine.getSpineReferences().mapNotNull { resource(it.resource?.href) }
+        val spine = parsed.spine.getSpineReferences().mapNotNull { resource(it.resource?.href) }
         check(spine.isNotEmpty()) { "EpubParser: no readable spine resources" }
         val coverImage = coverImageResource(findCoverImage(opfDoc, opfPath, resources), resources, entries)
             ?: coverImageResource(resource(parsed.coverImage?.href), resources, entries)

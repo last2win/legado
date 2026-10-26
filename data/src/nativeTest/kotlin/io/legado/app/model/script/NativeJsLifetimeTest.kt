@@ -63,11 +63,15 @@ class NativeJsLifetimeTest {
         try {
             val initialHandles = owner.handles.size
             assertEquals("Hello scoped DOM", NativeJsEngine.eval(
-                "var response = java.get('https://example.test', {}); var doc = response.parse(); doc.select('p').text();",
+                "var response = java.get('https://example.test', {}); var doc = response.parse(); doc.select('p')[0].text();",
                 owner, null))
             assertTrue(owner.handles.size > initialHandles)
             val handle = owner.handles.last()
-            assertEquals("undefined", NativeJsEngine.eval("typeof __nativeDispatch($handle, 704, [])", other, null))
+            // Both tagged integer literals and float handles must resolve correctly.
+            assertEquals("Hello scoped DOM", NativeJsEngine.eval("__nativeDispatch($handle, 3201, [])", owner, null))
+            assertEquals("undefined", NativeJsEngine.eval("typeof __nativeDispatch($handle + 0.5, 3201, [])", owner, null))
+            assertEquals("undefined", NativeJsEngine.eval("typeof __nativeDispatch(NaN, 3201, [])", owner, null))
+            assertEquals("undefined", NativeJsEngine.eval("typeof __nativeDispatch($handle, 3201, [])", other, null))
             assertEquals("Hello scoped DOM", NativeJsEngine.eval("doc.text()", owner, null))
         } finally {
             owner.close()

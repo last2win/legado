@@ -899,8 +899,7 @@ object NativeJsEngine : JsEngine {
     private fun bridgeObjectHandle(ctx: CPointer<JSContext>, obj: CValue<JSValue>): Long? {
         val handleValue = JS_GetPropertyStr(ctx, obj, "__h")
         try {
-            if (qjs_IsNumber(handleValue) == 0) return null
-            return qjs_ValueGetFloat64(handleValue).toLong().takeIf { it > 0 }
+            return NativeJsExtensionsBridge.readHandle(handleValue)
         } finally {
             JS_FreeValue(ctx, handleValue)
         }

@@ -31,6 +31,9 @@ import com.script.jsdispatch.generated.NativeGeneratedDispatch
 import io.legado.app.napi.quickjs.JSContext
 import io.legado.app.napi.quickjs.JSValue
 import io.legado.app.napi.quickjs.qjs_EvalTypeGlobal
+import io.legado.app.napi.quickjs.JS_TAG_INT
+import io.legado.app.napi.quickjs.JS_TAG_FLOAT64
+import io.legado.app.napi.quickjs.qjs_ValueGetTag
 import io.legado.app.napi.quickjs.JS_TAG_NULL
 import io.legado.app.napi.quickjs.JS_TAG_UNDEFINED
 import io.legado.app.napi.quickjs.qjs_FreeCString
@@ -168,7 +171,9 @@ object NativeJsExtensionsBridge {
     fun registerObject(obj: Any): Long = synchronized(handleTableLock) {
         handleCounter += 1
         val handle = handleCounter
-        handleTable[handle] = obj
+        // Response.parse() returns the org.jsoup compatibility facade; DOM dispatch
+        // operates on ksoup nodes. Store the underlying node under the same scoped handle.
+        handleTable[handle] = (obj as? org.jsoup.nodes.Node)?.ksoupNode ?: obj
         handle
     }
 
@@ -279,8 +284,11 @@ object NativeJsExtensionsBridge {
         val ctxNotNull = ctx ?: return jsUndefined()
         if (argc < 3 || argv == null) return jsUndefined()
         try {
-            val handle = qjs_ValueGetFloat64(argv[0L].readValue()).toLong()
-            val methodId = qjs_ValueGetInt(argv[1L].readValue())
+            val handle = readHandle(argv[0L].readValue()) ?: return jsUndefined()
+            val methodNumber = readNumber(argv[1L].readValue()) ?: return jsUndefined()
+            if (methodNumber < 0 || methodNumber > Int.MAX_VALUE ||
+                methodNumber != methodNumber.toInt().toDouble()) return jsUndefined()
+            val methodId = methodNumber.toInt()
             val argsArray = argv[2L].readValue()
             val obj = getObject(handle) ?: return jsUndefined()
             return dispatch(ctxNotNull, obj, methodId, argsArray)
@@ -1248,6 +1256,20 @@ function __createJsUrlObj(handle) {
         return qjs_NewString(ctx, s)
     }
 
+    // JS_VALUE_GET_FLOAT64 reads the union directly; integer-tagged values must
+    // be read as Int32 first (factory handle literals use JS_TAG_INT).
+    private fun readNumber(value: CValue<JSValue>): Double? = when (qjs_ValueGetTag(value)) {
+        JS_TAG_INT -> qjs_ValueGetInt(value).toDouble()
+        JS_TAG_FLOAT64 -> qjs_ValueGetFloat64(value)
+        else -> null
+    }
+
+    internal fun readHandle(value: CValue<JSValue>): Long? {
+        val number = readNumber(value) ?: return null
+        if (!number.isFinite() || number < 1 || number > 9_007_199_254_740_991.0) return null
+        return number.toLong().takeIf { it.toDouble() == number }
+    }
+
     /** JSValue → String (qjs_ToCString + qjs_FreeCString) */
     private fun jsValueToString(ctx: CPointer<JSContext>, v: CValue<JSValue>): String {
         val cstr = qjs_ToCString(ctx, v) ?: return ""
@@ -1273,7 +1295,7 @@ function __createJsUrlObj(handle) {
             return qjs_ValueGetBool(v) != 0
         }
         if (qjs_IsNumber(v) != 0) {
-            return qjs_ValueGetFloat64(v)
+            return readNumber(v)
         }
         if (qjs_IsString(v) != 0) {
             return jsValueToString(ctx, v)

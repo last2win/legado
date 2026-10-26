@@ -299,7 +299,14 @@ class EpubParserTest {
         val srcPaths = mutableListOf<String>()
         // 按顶层目录名分组: 每组作为一次 zipFiles 的源目录 (entry 前缀即该目录名)
         entries.entries.groupBy { it.key.substringBefore('/', "") }.forEach { (top, items) ->
-            if (top.isEmpty()) return@forEach
+            if (top.isEmpty()) {
+                items.forEach { (path, content) ->
+                    val target = root / path
+                    FileSystem.SYSTEM.write(target) { writeUtf8(content) }
+                    srcPaths += target.toString()
+                }
+                return@forEach
+            }
             val topDir = root / top
             FileSystem.SYSTEM.createDirectories(topDir)
             items.forEach { (path, content) ->
