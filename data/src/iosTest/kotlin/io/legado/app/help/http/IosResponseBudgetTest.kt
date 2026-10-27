@@ -11,14 +11,19 @@ import kotlin.test.*
 
 class IosResponseBudgetTest {
     @Test fun actualKmpCallRejectsOversizedBodyWithoutContentLength(): Unit = runBlocking {
+        var requests = 0
         val client = HttpClient(MockEngine {
+            requests++
             respond(ByteReadChannel(ByteArray(32 * 1024 * 1024 + 1)), HttpStatusCode.OK, headersOf())
         })
         try {
             val kmp = KmpHttpClient(client, 30_000, 30_000)
-            assertFailsWith<IllegalArgumentException> {
+            val failure = assertFailsWith<okio.IOException> {
                 kmp.newCall(KmpRequestBuilder().url("https://budget.invalid/large").build()).await()
             }
+            // KmpCallback exposes IOException; preserve the actual budget error as its cause.
+            assertTrue(failure.cause is IllegalArgumentException)
+            assertEquals(1, requests, "Budget failures must not retry the download")
         } finally { client.close() }
     }
 
