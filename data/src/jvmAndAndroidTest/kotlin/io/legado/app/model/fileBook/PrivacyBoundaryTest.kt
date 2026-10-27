@@ -4,6 +4,7 @@ import io.legado.app.constant.PreferKey
 import io.legado.app.help.file.safeBookFilePath
 import io.legado.app.help.storage.BackupPreferencePolicy
 import io.legado.app.help.http.mergeRequestCookies
+import io.legado.app.help.http.mergeRequestCookieHeader
 import org.junit.Assert.*
 import org.junit.Test
 import java.nio.file.Files
@@ -60,5 +61,8 @@ class PrivacyBoundaryTest {
         assertEquals("sid=account; sid=root", mergeRequestCookies("sid=account; sid=root", null))
         assertEquals("sid=temp; other=ok", mergeRequestCookies("sid=account; sid=root; other=ok", "sid=temp"))
         assertEquals("sid=; other=ok", mergeRequestCookies("sid=stored; other=ok", "sid="))
+        val headers = mutableMapOf("cOoKiE" to "sid=temp", "Accept" to "text/plain")
+        mergeRequestCookieHeader(headers, "sid=account; sid=root; other=ok")
+        assertEquals(mapOf("Cookie" to "sid=temp; other=ok", "Accept" to "text/plain"), headers)
     }
 }

@@ -76,3 +76,11 @@ fun mergeRequestCookies(stored: String?, explicit: String?): String? {
     return (overrides + pairs(stored).filter { it.substringBefore('=').trim() !in names })
         .joinToString("; ").takeIf { it.isNotEmpty() }
 }
+
+/** HTTP header names are case-insensitive even when a source supplies a plain Kotlin map. */
+fun mergeRequestCookieHeader(headers: MutableMap<String, String>, stored: String?) {
+    val explicit = headers.entries.filter { it.key.equals("Cookie", true) }.joinToString("; ") { it.value }
+    val merged = mergeRequestCookies(stored, explicit)
+    headers.keys.removeAll { it.equals("Cookie", true) }
+    if (merged != null) headers["Cookie"] = merged
+}

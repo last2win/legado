@@ -10,7 +10,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.*
 
 class IosResponseBudgetTest {
-    @Test fun actualKmpCallRejectsOversizedBodyWithoutContentLength() = runBlocking {
+    @Test fun actualKmpCallRejectsOversizedBodyWithoutContentLength(): Unit = runBlocking {
         val client = HttpClient(MockEngine {
             respond(ByteReadChannel(ByteArray(32 * 1024 * 1024 + 1)), HttpStatusCode.OK, headersOf())
         })

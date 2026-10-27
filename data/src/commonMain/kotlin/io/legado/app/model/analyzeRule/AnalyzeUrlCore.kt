@@ -515,9 +515,7 @@ open class AnalyzeUrlCore(
         }
         val cookie = io.legado.app.help.http.CookieStoreProviders.get()
             ?.getCookieForSource(source?.getKey(), urlNoQuery) ?: ""
-        if (cookie.isNotEmpty()) {
-            io.legado.app.help.http.mergeRequestCookies(cookie, headerMap["Cookie"])?.let { headerMap["Cookie"] = it }
-        }
+        io.legado.app.help.http.mergeRequestCookieHeader(headerMap, cookie)
         if (enabledCookieJar) headerMap[cookieJarHeader] = "1"
         else headerMap.remove(cookieJarHeader)
     }
