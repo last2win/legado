@@ -74,7 +74,7 @@ import kotlin.time.Duration
  *   故 URL 字符串可能与 jvmAndAndroidMain 略不同 (合法字符集合完全一致, 仅缺语义规范化)
  *   为什么必须在本端做: Darwin 引擎经 NSURLComponents 装 URL, 段内非法字符或不成套的 `%`
  *   会抛 NSInvalidArgumentException (ObjC 异常, Kotlin/Native 捕不了 → 进程终止)
- * - 响应体: nativeMain 端 KmpResponseBody 在构造时一次性 `bodyAsBytes()` 缓存到内存,
+ * - 响应体: nativeMain 端 KmpResponseBody 在构造前按块读取、检查 32 MiB 预算，再缓存到内存,
  *   OkHttp 原生 ResponseBody 是流式; 大文件场景内存占用更高 (与 WebDav.native.kt 同样降级)
  * - 协议枚举: Ktor 不暴露 Protocol 概念, [KmpResponseBuilder.protocol] 入参被忽略,
  *   [KmpResponse.networkResponse] / [priorResponse] / [isRedirect] 等少数成员为占位
@@ -379,14 +379,14 @@ actual class KmpRequestBuilder actual constructor() {
  * nativeMain 端 [KmpResponse] 实现: 持有 Ktor [HttpResponse] + 已缓存的 body bytes。
  *
  * - [code] / [message] / [headers] / [isSuccessful] 直接从 [HttpResponse] 读取
- * - [body] 是 [NativeKmpResponseBody], **构造时一次性 bodyAsBytes() 读到内存缓存**
+ * - [body] 是 [NativeKmpResponseBody], **构造前按实际字节数限额读取并缓存**
  *   (Ktor 流只能读一次, 缓存后可多次访问 body, 与 OkHttp 行为对齐)
  * - [networkResponse] / [priorResponse] / [isRedirect] 是 OkHttp 重定向相关成员,
  *   nativeMain 端 Ktor 自动处理重定向, 不暴露这些信息, 占位返回 null/false
  * - [request] 返回原始 [KmpRequest] (Ktor HttpResponse.call 不直接暴露 OkHttp 风格 request)
  *
  * 注: 构造时即读取 body, 失败 bodyBytes 为 null (后续 body 返回空 ResponseBody);
- * 调用方应在协程上下文中构造 (runBlocking 内 bodyAsBytes)。
+ * 调用方在流式 HttpStatement.execute 内限额读取，再传入构造函数。
  */
 actual class KmpResponse : Closeable {
     internal var codeVal: Int = 200
@@ -553,7 +553,7 @@ actual class KmpResponseBuilder actual constructor() {
 /**
  * nativeMain 端 [KmpResponseBody] 实现: 包装已缓存的字节数组。
  *
- * Ktor [HttpResponse.bodyAsBytes] 是 suspend 且流只能读一次;
+ * Ktor 响应流只能读一次，读取过程由 readLimitedBody 执行预算检查;
  * 这里在 [KmpResponse] 构造时一次性读到 [bytesValue], 之后 [bytes]/[string]/[byteStream]
  * 均从内存缓存读取, 可多次访问 (与 OkHttp ResponseBody 行为对齐)。
  */

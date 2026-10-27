@@ -209,8 +209,8 @@ class NativeFileBookAccessor : FileBookAccessor {
         source: BaseSource?
     ): String {
         requireBookFileName(fileName)
-        // 网络 URL 走 AnalyzeUrlCore 取字节
-        // (native 响应体本就整块进内存, getByteArrayAwait 与流式等价)
+        // 普通书源 URL 经 AnalyzeUrlCore 受限读取 (最多 32 MiB 内存响应)。
+        // WebDAV 大文件使用下面的流式落盘路径。
         if (str.startsWith(BookType.webDavTag)) {
             // webDav 整书下载与 "下载到本地" / "刷新远端更新" 链路共用同一流式入口
             // (见 [saveBookFileFromWebDav]; 旧实现直接内联 downloadTo, 两份等价实现归一)

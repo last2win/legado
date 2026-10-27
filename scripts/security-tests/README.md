@@ -164,4 +164,7 @@ EPUB 测试夹具补齐 ZIP 根目录文件；生产解析器允许读取包内�
 新增 `PrivacyBoundaryTest` 验证配置白名单、ZIP 中配置内容、恢复凭据保留、文件越界/符号链接、
 正常文件更新与 Cookie 合并。Native/iOS 新增真实 QuickJS 超时/内存、同名 ZIP 连续导入、
 无 Content-Length 的超限 KmpCall 及实际 Cookie 请求链测试；结果以本次提交的 CI 为准。
+`IosFileDownloadStreamingTest` 让模拟服务端暂停在响应中途，断言真实下载器已经写出临时文件，
+再允许发送剩余内容，验证整包预缓存不会绕过流式落盘。普通 AnalyzeUrl 书源下载仍受 32 MiB
+内存响应上限约束；大型文件应走 WebDAV/文件下载器。
 上述测试不代表已执行 iPhone 真机登录、后台音频、签名安装或并发导入的进程内存实测。

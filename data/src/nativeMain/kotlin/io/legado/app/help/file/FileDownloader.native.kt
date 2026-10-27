@@ -34,20 +34,19 @@ import kotlinx.coroutines.withContext
  * - 分块流式写入, 内存峰值只有一块复用缓冲区, 与文件体积无关
  * - 路径分隔符恒为 "/" (POSIX 文件系统)
  */
-class NativeFileDownloader : FileDownloader {
+class NativeFileDownloader(private val createClient: () -> HttpClient = { HttpClient() }) : FileDownloader {
 
     override suspend fun download(url: String, destPath: String, fileName: String): Boolean {
         return withContext(Dispatchers.IO) {
             runCatching {
                 deleteOrphanAtomicWriteTempFilesInDir(destPath)
-                val client = HttpClient()
+                val targetPath = safeBookFilePath(destPath, fileName)
+                val client = createClient()
                 try {
                     client.prepareGet(url.canonicalizeUri()).execute { response ->
                         if (!response.status.isSuccess()) {
                             false
                         } else {
-                            val targetPath =
-                                safeBookFilePath(destPath, fileName)
                             copyToFileAtomically(targetPath, response.bodyAsChannel())
                             true
                         }
