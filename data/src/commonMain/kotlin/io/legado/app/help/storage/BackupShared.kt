@@ -308,7 +308,7 @@ object BackupShared {
 
             // 2. servers.json 加密 (与原版一致)
             GSON.toJson(appDb.serverDao.all()).let { json ->
-                val encrypted = aes.runCatching { encryptBase64(json) }.getOrDefault(json)
+                val encrypted = aes.encryptBase64(json)
                 BackupFileOps.writeText(
                     workDirPath + BackupFileOps.separator + "servers.json",
                     encrypted
@@ -352,25 +352,9 @@ object BackupShared {
 
             currentCoroutineContext().ensureActive()
 
-            // 4. config.json dump 全量配置 (过滤忽略项, 显式忽略废弃的 useZhLayout, webDavPassword 加密, 与原版一致)
-            val configMap = mutableMapOf<String, Any>()
-            PreferenceProviders.get().getAll().forEach { (key, value) ->
-                if (key != "useZhLayout" && BackupConfigShared.keyIsNotIgnore(key)) {
-                    when (key) {
-                        PreferKey.webDavPassword -> {
-                            configMap[key] = aes.runCatching {
-                                encryptBase64(value.toString())
-                            }.getOrDefault(value.toString())
-                        }
-
-                        // Set<String> (SharedPreferences 合法值类型) 转 List 再序列化,
-                        // 否则 toJsonElement 走 toString() 分支写成字符串, 与原版 Gson 的数组不兼容
-                        else -> value?.let {
-                            configMap[key] = if (it is Set<*>) it.toList() else it
-                        }
-                    }
-                }
-            }
+            // Export only reviewed portable settings. Never serialize platform-wide defaults.
+            val configMap = BackupPreferencePolicy.filter(PreferenceProviders.get().getAll())
+                .filterKeys { BackupConfigShared.keyIsNotIgnore(it) }.toMutableMap()
             // homeTabs/exploreFavorites 真身在 filesDir JSON 文件, 内容塞回 config.json
             // 保持原有备份通道 (文件不存在说明从未使用, 跳过)
             listOf(

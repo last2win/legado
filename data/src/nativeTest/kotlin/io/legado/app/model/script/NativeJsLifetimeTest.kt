@@ -18,6 +18,28 @@ import org.jsoup.internal.HttpConnectionRequest
 
 /** Run on macOS with :data:iosSimulatorArm64Test; exercises the actual QuickJS bridge. */
 class NativeJsLifetimeTest {
+    @Test
+    fun pureJavaScriptLoopIsInterruptedAndScopeRemainsUsable() {
+        val scope = NativeJsEngine.createStandaloneScope() as NativeJsScope
+        try {
+            scope.budget.timeoutMillis = 50
+            assertFailsWith<NativeScriptException> { NativeJsEngine.eval("while (true) {}", scope, null) }
+            scope.budget.timeoutMillis = 30_000
+            assertEquals("alive", NativeJsEngine.eval("'alive'", scope, null))
+        } finally { scope.close() }
+    }
+
+    @Test
+    fun runtimeRejectsAllocationBeyondItsHeapBudget() {
+        val scope = NativeJsEngine.createStandaloneScope()
+        try {
+            val failure = assertFailsWith<NativeScriptException> {
+                NativeJsEngine.eval("new ArrayBuffer(80 * 1024 * 1024)", scope, null)
+            }
+            assertTrue(failure.message.orEmpty().contains("memory", ignoreCase = true), failure.message)
+        } finally { scope.close() }
+    }
+
     @BeforeTest
     fun initializeHostBindings() {
         // No image operations are exercised here; keep the real QuickJS/runtime/DOM bridge.

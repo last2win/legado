@@ -64,3 +64,15 @@ fun mergeCookies(vararg cookies: String?): String? {
     val cookieMap = mergeCookiesToMap(*cookies)
     return mapToCookie(cookieMap)
 }
+
+/** Request Cookie is an ordered list: same-name cookies from different paths must survive.
+ * Explicit values override stored values of that name for this request only.
+ */
+fun mergeRequestCookies(stored: String?, explicit: String?): String? {
+    fun pairs(value: String?) = value.orEmpty().split(';').map(String::trim)
+        .filter { it.indexOf('=') > 0 }
+    val overrides = pairs(explicit)
+    val names = overrides.map { it.substringBefore('=').trim() }.toSet()
+    return (overrides + pairs(stored).filter { it.substringBefore('=').trim() !in names })
+        .joinToString("; ").takeIf { it.isNotEmpty() }
+}

@@ -26,8 +26,7 @@ import okio.GzipSource
  *   platform.zlib, 无需额外 cinterop)
  * - rar/7z/bz2/xz/lzma 无 native 解码器 (desktop 靠 JVM 的 commons-compress + junrar,
  *   两者均无 native 变体), deCompress 抛点名格式的异常, getByteArrayContent 返回 null
- * - deCompress 目标目录 `{cacheDir}/ArchiveTemp/{md516(basename)}`, 与
- *   JsExtensionsCommon.unArchiveFile 计算的相对目录 (tempFolderName/md516(name)) 对齐
+ * - 每次 deCompress 使用独立目录，避免同名包残留或并发导入相互覆盖。
  */
 object NativeArchiveProvider : ArchiveProvider {
 
@@ -38,44 +37,49 @@ object NativeArchiveProvider : ArchiveProvider {
         require(File(archivePath).length() <= ArchiveLimits.MAX_INPUT_BYTES) { "Archive input size limit exceeded" }
         val name = archivePath.substringAfterLast('/').substringAfterLast('\\')
         val destDir = FileUtilsCommon.getPath(
-            FileUtilsCommon.getCachePath(), tempFolderName, MD5Utils.md5Encode16(name)
+            FileUtilsCommon.getCachePath(), tempFolderName, MD5Utils.md5Encode16(name) + "-" + kotlin.random.Random.nextLong().toULong().toString(16)
         )
         File(destDir).mkdirs()
-        when {
-            // tar 纯格式 (ustar), 无需压缩库
-            name.endsWith(".tar", true) -> unTarToPath(File(archivePath), destDir)
+        try {
+            when {
+                // tar 纯格式 (ustar), 无需压缩库
+                name.endsWith(".tar", true) -> unTarToPath(File(archivePath), destDir)
 
-            // tar.gz / .tgz: 先 gzip 解压成中间 tar, 解完删掉中间产物
-            name.endsWith(".tar.gz", true) || name.endsWith(".tgz", true) -> {
-                val tar = gzipToFile(File(archivePath))
-                try {
-                    unTarToPath(tar, destDir)
-                } finally {
-                    tar.delete()
+                // tar.gz / .tgz: 先 gzip 解压成中间 tar, 解完删掉中间产物
+                name.endsWith(".tar.gz", true) || name.endsWith(".tgz", true) -> {
+                    val tar = gzipToFile(File(archivePath))
+                    try {
+                        unTarToPath(tar, destDir)
+                    } finally {
+                        tar.delete()
+                    }
                 }
-            }
 
-            // 单文件 gzip: 解压成同 base 名文件 (与 gzipToFile 同口径: 唯一临时件 + 改名就位)
-            name.endsWith(".gz", true) -> {
-                val out = destDir + "/" + name.removeSuffix(".gz")
-                if (!writeBytesAtomically(out, gzipDecompress(File(archivePath).readBytes()))) {
-                    throw NoStackTraceException("gzip 解压写入失败: $out")
+                // 单文件 gzip: 解压成同 base 名文件 (与 gzipToFile 同口径: 唯一临时件 + 改名就位)
+                name.endsWith(".gz", true) -> {
+                    val out = destDir + "/" + name.removeSuffix(".gz")
+                    if (!writeBytesAtomically(out, gzipDecompress(File(archivePath).readBytes()))) {
+                        throw NoStackTraceException("gzip 解压写入失败: $out")
+                    }
                 }
+
+                // zip/cbz: 项目已有 NativeZipCodec
+                name.endsWith(".zip", true) || name.endsWith(".cbz", true) ->
+                    NativeZipCodec.unZipToPath(archivePath, destDir)
+
+                else -> throw NoStackTraceException(
+                    "iOS/鸿蒙端仅支持 zip/cbz/tar/tar.gz/tgz/gz 解压, 不支持 $name" +
+                        " (rar/7z/bz2/xz/lzma 无 native 解码库)"
+                )
             }
-
-            // zip/cbz: 项目已有 NativeZipCodec
-            name.endsWith(".zip", true) || name.endsWith(".cbz", true) ->
-                NativeZipCodec.unZipToPath(archivePath, destDir)
-
-            else -> throw NoStackTraceException(
-                "iOS/鸿蒙端仅支持 zip/cbz/tar/tar.gz/tgz/gz 解压, 不支持 $name" +
-                    " (rar/7z/bz2/xz/lzma 无 native 解码库)"
-            )
+            // 返回解压出的文件绝对路径列表 (递归, 对齐 app 端 LibArchiveUtils.unArchive 返回 List<File>)
+            val result = mutableListOf<String>()
+            collectFiles(File(destDir), result)
+            return result
+        } catch (failure: Throwable) {
+            FileUtilsCommon.delete(destDir)
+            throw failure
         }
-        // 返回解压出的文件绝对路径列表 (递归, 对齐 app 端 LibArchiveUtils.unArchive 返回 List<File>)
-        val result = mutableListOf<String>()
-        collectFiles(File(destDir), result)
-        return result
     }
 
     /**

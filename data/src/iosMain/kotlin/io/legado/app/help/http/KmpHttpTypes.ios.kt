@@ -21,11 +21,10 @@ import io.ktor.client.plugins.BodyProgress
 import io.ktor.client.plugins.onDownload
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
-import io.ktor.client.request.request
 import io.ktor.client.request.setBody
 import io.ktor.client.request.url
 import io.ktor.client.statement.HttpResponse
-import io.ktor.client.statement.bodyAsBytes
+import io.ktor.client.request.prepareRequest
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -413,13 +412,13 @@ actual class KmpResponse : Closeable {
         ktorResponse: HttpResponse,
         request: KmpRequest,
         finalUrl: String? = null,
+        rawBytes: ByteArray,
     ) {
         codeVal = ktorResponse.status.value
         messageVal = ktorResponse.status.description
         headersVal = ktorResponse.headers.entries().associate { it.key to it.value }
         contentTypeStr = ktorResponse.headers[HttpHeaders.ContentType]
-        val rawBytes = runCatching { runBlocking { ktorResponse.bodyAsBytes() } }.getOrNull()
-        bodyBytes = rawBytes?.let {
+        bodyBytes = rawBytes.let {
             decompressResponseBody(
                 it,
                 ktorResponse.headers[HttpHeaders.ContentEncoding]
@@ -657,11 +656,10 @@ internal class NativeKmpCall(
             ktorRequest.onDownload { bytesSentTotal, contentLength ->
                 DownloadProgressRegistry.notify(prepared.url.toString(), bytesSentTotal, contentLength)
             }
-            val httpResponse = ktorClientRequest(ktorClient, ktorRequest)
-            val response = KmpResponse(httpResponse, prepared)
+            val response = ktorClientRequest(ktorClient, ktorRequest, prepared)
             if (enableCookieJar) IosCookieStore.saveResponseCookies(sourceKey, response)
-            val location = httpResponse.headers[HttpHeaders.Location]
-            if (httpResponse.status.value !in listOf(301, 302, 303, 307, 308) || location == null) return response
+            val location = response.header("Location")
+            if (response.code !in listOf(301, 302, 303, 307, 308) || location == null) return response
             check(hop < 20) { "Too many HTTP redirects" }
             val target = io.legado.app.utils.NetworkUtils.getAbsoluteURL(prepared.url.toString(), location)
             require(CookieTarget.parse(target) != null) { "Unsupported redirect URL" }
@@ -669,8 +667,8 @@ internal class NativeKmpCall(
             if (!sameCookieOrigin(prepared.url.toString(), target)) {
                 builder.removeHeader("Authorization")
             }
-            if ((httpResponse.status.value == 303 && current.method != "HEAD") ||
-                (httpResponse.status.value in listOf(301, 302) && current.method == "POST")) {
+            if ((response.code == 303 && current.method != "HEAD") ||
+                (response.code in listOf(301, 302) && current.method == "POST")) {
                 builder.method("GET", null).removeHeader("Content-Type").removeHeader("Content-Length")
             }
             // Re-select scoped cookies for EACH URL (including same-host path and HTTPS changes).
@@ -687,16 +685,21 @@ internal class NativeKmpCall(
     /** retryOnConnectionFailure(true) 等价: 非超时类传输错误重试一次 (OkHttp 默认重试) */
     private suspend fun ktorClientRequest(
         ktorClient: HttpClient,
-        ktorRequest: HttpRequestBuilder
-    ): HttpResponse {
+        ktorRequest: HttpRequestBuilder,
+        prepared: KmpRequest,
+    ): KmpResponse {
         return try {
-            ktorClient.request(ktorRequest)
+            ktorClient.prepareRequest(ktorRequest).execute { http ->
+                KmpResponse(http, prepared, rawBytes = http.readLimitedBody())
+            }
         } catch (e: IOException) {
             // Ktor 各引擎异常 (ConnectTimeoutException / SocketTimeoutException /
             // HttpRequestTimeoutException 等) 均继承 kotlinx.io.IOException
             if (!e.isRetryableTransportError()) throw e
             // body 是内存字节 (ByteArrayContent), 可安全重发
-            ktorClient.request(ktorRequest)
+            ktorClient.prepareRequest(ktorRequest).execute { http ->
+                KmpResponse(http, prepared, rawBytes = http.readLimitedBody())
+            }
         }
     }
 

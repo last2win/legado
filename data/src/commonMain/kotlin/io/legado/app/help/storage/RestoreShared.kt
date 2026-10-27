@@ -282,17 +282,6 @@ object RestoreShared {
             configMap.forEach { (key, value) ->
                 if (key != "useZhLayout" && BackupConfigShared.keyIsNotIgnore(key)) {
                     when (key) {
-                        PreferKey.webDavPassword -> {
-                            runCatching { aes.decryptStr(value.toString()) }
-                                .getOrNull()?.let { prefs.putString(key, it) }
-                                ?: run {
-                                    // 解密失败: 若当前 webDavPassword 也为空, 用密文兜底
-                                    if (prefs.getString(PreferKey.webDavPassword, "").isBlank()) {
-                                        prefs.putString(key, value.toString())
-                                    }
-                                }
-                        }
-
                         // 真身在 filesDir JSON 文件: 恢复直接写回文件 (writeText 自带失败兜底)
                         HomeTabHelpShared.PREF_KEY ->
                             FilesJsonStore.writeText(HomeTabHelpShared.FILE_NAME, value.toString())

@@ -15,6 +15,10 @@ common=core/src/commonMain/kotlin/io/legado/app/web/api/WebAccess.kt
   "$common" core/src/jvmAndAndroidMain/kotlin/io/legado/app/web/api/WebAccessToken.jvmAndAndroid.kt \
   data/src/commonMain/kotlin/io/legado/app/help/http/CookieScope.kt \
   data/src/commonMain/kotlin/io/legado/app/help/http/NativeProxyConfig.kt \
+  foundation/src/commonMain/kotlin/io/legado/app/constant/PreferKey.kt \
+  data/src/commonMain/kotlin/io/legado/app/help/storage/BackupPreferencePolicy.kt \
+  data/src/commonMain/kotlin/io/legado/app/help/file/SafeBookFile.kt \
+  data/src/commonMain/kotlin/io/legado/app/help/http/CookieUtils.kt \
   data/src/commonMain/kotlin/io/legado/app/help/storage/ArchiveLimits.kt \
   data/src/commonMain/kotlin/io/legado/app/help/storage/ArchiveReadLimits.kt \
   data/src/commonMain/kotlin/io/legado/app/help/archive/TarReader.kt \
@@ -33,6 +37,7 @@ common=core/src/commonMain/kotlin/io/legado/app/web/api/WebAccess.kt
   data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/ZipEntryReaderTest.kt \
   data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/InflateTest.kt \
   data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/ArchiveReadLimitsTest.kt \
+  data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/PrivacyBoundaryTest.kt \
   scripts/security-tests/stubs/*.kt scripts/security-tests/*Regression.kt
 for test in ZipRegression BoundaryRegression ArchiveEntryRegression; do
   "$JAVA_HOME/bin/java" -Xmx256m -cp "$work/tests.jar:$classpath" "security.${test}Kt"
@@ -43,4 +48,5 @@ done
   io.legado.app.model.fileBook.ZipEntryReaderTest \
   io.legado.app.model.fileBook.InflateTest
 "$JAVA_HOME/bin/java" -Xmx256m -cp "$work/tests.jar:$classpath" org.junit.runner.JUnitCore \
-  io.legado.app.model.fileBook.ArchiveReadLimitsTest
+  io.legado.app.model.fileBook.ArchiveReadLimitsTest \
+  io.legado.app.model.fileBook.PrivacyBoundaryTest

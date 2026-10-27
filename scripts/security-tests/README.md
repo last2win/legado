@@ -143,3 +143,25 @@ EPUB 测试夹具补齐 ZIP 根目录文件；生产解析器允许读取包内�
 自动缓存整份响应。iOS 授权文件及 Native 本地 CBZ 除文件长度预检外，实际读取同样有 64 MiB 上限。
 `ArchiveReadLimitsTest` 验证超限时最多消费预算加一个探测字节，`WebDavRangeTest` 用 MockEngine
 直接覆盖生产 Range 请求函数，包含无 Content-Length 和伪造 Content-Length 的响应。
+
+## 备份、文件与运行预算补充（2026-10-28）
+
+- `config.json` 导出与新旧配置恢复共用显式白名单。`password`、iOS 持久 Cookie、WebDAV
+  账号/口令、未知配置键不迁移；恢复保留设备现有凭据。服务器配置仍按既有密码加密流程备份，
+  加密失败直接终止，取消原先明文兜底。此策略不扫描用户写入书源规则中的任意字符串。
+- Native/桌面书籍保存入口只接受单个文件名，拒绝分隔符、绝对路径、NUL、Windows 设备名；
+  在规范化的用户选定目录中保存，拒绝已有符号链接目标。WebDAV 初次下载与远端更新共用该入口。
+- iOS 普通内存响应和 Native WebDAV 内存读取以流式请求执行，实际接收最多 32 MiB，
+  不依赖 Content-Length。Native 文件下载使用 `prepareGet().execute` 和 64 KiB 分块原子写入，
+  取消/失败清除临时件；该下载路径不把整份响应缓存到内存，也不受 32 MiB 内存响应上限限制。
+- 请求 Cookie 保留不同路径的同名条目和顺序；显式临时 Cookie 覆盖同名存储值，不修改持久存储。
+- Native 每次解压使用独立目录，失败清理该次目录；同名 ZIP 不复用上次解压产物。
+- Native QuickJS 所有 runtime（包括编译器）设置 64 MiB 堆上限、512 KiB 栈上限；
+  每次最外层执行限时 30 秒，嵌套调用不重置期限，C 中断回调同时检查协程取消。
+  这些限制不等于整个进程的总内存预算，也不能中断阻塞中的任意宿主函数。
+
+本轮本地独立测试通过 81 条边界断言、35 条解压入口断言及 31 个 JUnit 用例。
+新增 `PrivacyBoundaryTest` 验证配置白名单、ZIP 中配置内容、恢复凭据保留、文件越界/符号链接、
+正常文件更新与 Cookie 合并。Native/iOS 新增真实 QuickJS 超时/内存、同名 ZIP 连续导入、
+无 Content-Length 的超限 KmpCall 及实际 Cookie 请求链测试；结果以本次提交的 CI 为准。
+上述测试不代表已执行 iPhone 真机登录、后台音频、签名安装或并发导入的进程内存实测。

@@ -1,5 +1,7 @@
 package io.legado.app.model.fileBook
 
+import io.legado.app.help.file.safeBookFilePath
+import io.legado.app.help.file.requireBookFileName
 import io.legado.app.help.storage.ArchiveLimits
 import io.legado.app.model.script.JsEngines
 
@@ -206,6 +208,7 @@ class NativeFileBookAccessor : FileBookAccessor {
         fileName: String,
         source: BaseSource?
     ): String {
+        requireBookFileName(fileName)
         // 网络 URL 走 AnalyzeUrlCore 取字节
         // (native 响应体本就整块进内存, getByteArrayAwait 与流式等价)
         if (str.startsWith(BookType.webDavTag)) {
@@ -246,7 +249,7 @@ class NativeFileBookAccessor : FileBookAccessor {
      */
     override suspend fun saveBookFileFromWebDav(webDav: WebDav, fileName: String): String {
         val dir = bookSaveDir()
-        val file = File("$dir/$fileName")
+        val file = File(safeBookFilePath(dir, fileName))
         // 分辨"保存位置不可用"与网络/传输异常: 前者按 app 端 FileBook.saveBookFile 文件路径分支的
         // 口径给出权限类提示, 后者原样透传 (与 desktop 端同一口径)。落盘要在目标目录里建临时件
         // 再改名, 所以探的是"能否在目标目录里建出临时件" (名字用共享契约生成, 探完即删);
@@ -277,10 +280,10 @@ class NativeFileBookAccessor : FileBookAccessor {
         // 的调用方 (RemoteBookViewModelShared 的 onPermissionDenied / ReaderScreenModel 的权限请求链)
         // 拉起"去设置目录"出口; 原版该分支同样 `catch (e: Exception)` 包住整段写。
         val dir = bookSaveDir()
-        val file = File("$dir/$fileName")
+        val file = File(safeBookFilePath(dir, fileName))
         try {
             File(dir).mkdirs()
-            file.writeBytes(inputStream.readFully())
+            io.legado.app.help.copyToFileAtomically(file.path, inputStream)
         } catch (e: Exception) {
             throw SecurityException("请重新设置书籍保存位置\nPermission Denial\n$e").apply {
                 addSuppressed(e)
@@ -322,23 +325,7 @@ class NativeFileBookAccessor : FileBookAccessor {
         if (start >= end) ByteArray(0) else bytes.copyOfRange(start, end)
     }
 
-    /** 读尽 [InputStream] 全部字节 (expect InputStream 无 readBytes, 手写累积)。 */
-    private fun InputStream.readFully(): ByteArray {
-        val chunks = mutableListOf<ByteArray>()
-        val buf = ByteArray(8192)
-        while (true) {
-            val n = read(buf, 0, buf.size)
-            if (n <= 0) break
-            chunks.add(buf.copyOf(n))
-        }
-        val out = ByteArray(chunks.sumOf { it.size })
-        var off = 0
-        for (c in chunks) {
-            c.copyInto(out, off)
-            off += c.size
-        }
-        return out
-    }
+
 }
 
 /**

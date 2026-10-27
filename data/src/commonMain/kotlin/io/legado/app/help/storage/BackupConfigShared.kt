@@ -151,6 +151,7 @@ object BackupConfigShared {
 
     fun keyIsNotIgnore(key: String): Boolean {
         return when {
+            !BackupPreferencePolicy.allows(key) -> false
             ignorePrefKeys.contains(key) -> false
             isIgnoredLegacyVideoProgressKey(key) -> false
             // 动态 key 的历史遗留 (书源评分 origin/origin_name_author, 已迁 caches 表):

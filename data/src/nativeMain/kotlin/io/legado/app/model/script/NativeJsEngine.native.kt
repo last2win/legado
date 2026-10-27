@@ -2,6 +2,8 @@
 
 package io.legado.app.model.script
 
+import kotlinx.cinterop.StableRef
+import kotlinx.coroutines.isActive
 import com.fleeksoft.ksoup.nodes.Node
 import com.script.jsdispatch.JsValueConverters
 
@@ -186,7 +188,7 @@ object NativeJsEngine : JsEngine {
 
     /** 编译用临时 ctx 单例 (进程级, 永不释放 — 对齐 JVM QuickJsEngine.compilerCtx 生命周期)。 */
     private val compilerLock = SynchronizedObject()
-    private var compilerCtx: CPointer<JSContext>? = null
+    private var compilerScope: NativeJsScope? = null
 
     // ============ 一次性 eval ============
 
@@ -217,28 +219,43 @@ object NativeJsEngine : JsEngine {
      * quickjs 单线程模型, runtime 间互不影响。
      */
     override fun getRuntimeScope(bindings: JsBindings): JsScope {
-        val rt = JS_NewRuntime() ?: error("JS_NewRuntime() returned null")
-        val ctx = JS_NewContext(rt) ?: error("JS_NewContext() returned null")
-        // 注入 bootstrap (bindingsStack + Java 类相关 stub + JsExtensions 桥接工厂)
-        evalInternal(ctx, BOOTSTRAP_CODE, "<bootstrap>", checkException = true)
-        // 注册 native 分派函数 __nativeDispatch 到 globalThis (供 JsExtensions 桥接 JS 层回调)
-        registerNativeDispatch(ctx)
-        val scope = NativeJsScope(rt, ctx).apply {
-            dangerousApi = bindings.dangerousApi
-        }
-        // 注入 bindings 变量到 globalThis
-        injectBindings(scope, bindings)
-        return scope
+        val scope = newLimitedScope()
+        try {
+            scope.dangerousApi = bindings.dangerousApi
+            scope.withUse {
+                evalInternal(scope.ctx!!, BOOTSTRAP_CODE, "<bootstrap>", checkException = true)
+                registerNativeDispatch(scope.ctx!!)
+                injectBindings(scope, bindings)
+            }
+            return scope
+        } catch (failure: Throwable) { scope.close(); throw failure }
     }
 
-    /** 创建独立 scope, 不与 SharedJsScope 共享。 */
     override fun createStandaloneScope(): JsScope {
+        val scope = newLimitedScope()
+        try {
+            scope.withUse {
+                evalInternal(scope.ctx!!, BOOTSTRAP_CODE, "<bootstrap>", checkException = true)
+                registerNativeDispatch(scope.ctx!!)
+            }
+            return scope
+        } catch (failure: Throwable) { scope.close(); throw failure }
+    }
+
+    private fun newLimitedScope(): NativeJsScope {
         val rt = JS_NewRuntime() ?: error("JS_NewRuntime() returned null")
-        val ctx = JS_NewContext(rt) ?: error("JS_NewContext() returned null")
-        evalInternal(ctx, BOOTSTRAP_CODE, "<bootstrap>", checkException = true)
-        // 独立 scope 也需注册 __nativeDispatch (可能注入 java 变量)
-        registerNativeDispatch(ctx)
-        return NativeJsScope(rt, ctx)
+        val budget = NativeScriptBudget()
+        val ref = StableRef.create(budget)
+        NativeScriptBudget.install(rt, ref)
+        val ctx = JS_NewContext(rt)
+        if (ctx == null) {
+            JS_FreeRuntime(rt)
+            ref.dispose()
+            error("JS_NewContext() returned null")
+        }
+        return NativeJsScope(rt, ctx, budget, ref).also { scope ->
+            budget.cancelled = { scope.coroutineContext?.isActive == false }
+        }
     }
 
     /**
@@ -281,7 +298,8 @@ object NativeJsEngine : JsEngine {
      * 整体串行化在 [compilerLock] 内 (对齐 JVM compile 的 synchronized)。
      */
     override fun compile(script: String): JsCompiledScript = synchronized(compilerLock) {
-        compileToBytecode(script, getCompilerCtx(), "<compile>")
+        val scope = compilerScope ?: newLimitedScope().also { compilerScope = it }
+        scope.withUse { compileToBytecode(script, scope.ctx!!, "<compile>") }
     }
 
     /** 在指定 scope 上编译 (复用 scope 的 ctx, 符号解析一致, 对齐 JVM compile(script, scope))。 */
@@ -289,19 +307,6 @@ object NativeJsEngine : JsEngine {
         val nativeScope = scope as? NativeJsScope
             ?: error("NativeJsEngine.compile requires NativeJsScope, got ${scope::class}")
         return nativeScope.withUse { compileToBytecode(script, nativeScope.ctx!!, "<compile>") }
-    }
-
-    /**
-     * 获取编译用临时 ctx (懒创建, 复用; 进程级生命周期, 永不释放 — 对齐 JVM getCompilerCtx)。
-     * compile 只解析不执行, 无需 bootstrap/bindings。
-     * 调用方需已持有 [compilerLock] (见 [compile])。
-     */
-    private fun getCompilerCtx(): CPointer<JSContext> {
-        compilerCtx?.let { return it }
-        val rt = JS_NewRuntime() ?: error("JS_NewRuntime() returned null")
-        val ctx = JS_NewContext(rt) ?: error("JS_NewContext() returned null")
-        compilerCtx = ctx
-        return ctx
     }
 
     /**
@@ -1477,11 +1482,13 @@ function __wrapJavaHandle(handle) {
  * @property ctx quickjs JSContext 指针 (cinterop CPointer<JSContext>), 由 JS_NewContext 创建
  * @property dangerousApi 是否旁路安全名单 (native 上语义为 no-op, 保留字段对齐接口)
  */
-class NativeJsScope(
+class NativeJsScope internal constructor(
     /** quickjs JSRuntime 指针 (CPointer<JSRuntime>), 由 JS_NewRuntime 创建。null = 已 close。 */
     rt: CPointer<JSRuntime>?,
     /** quickjs JSContext 指针 (CPointer<JSContext>), 由 JS_NewContext 创建。null = 已 close。 */
     ctx: CPointer<JSContext>?,
+    internal val budget: NativeScriptBudget,
+    private val budgetRef: StableRef<NativeScriptBudget>,
     /** native 上 dangerousApi 语义为 no-op (无 Java 反射可旁路), 保留字段仅为接口对齐 */
     var dangerousApi: Boolean = false
 ) : JsScope {
@@ -1491,7 +1498,7 @@ class NativeJsScope(
         private set
     private val useLock = SynchronizedObject()
     private val lifetime = DeferredClose { releaseResources() }
-    internal fun <T> withUse(block: () -> T): T = synchronized(useLock) { lifetime.use(block) }
+    internal fun <T> withUse(block: () -> T): T = synchronized(useLock) { lifetime.use { budget.use(block) } }
 
 
     override var coroutineContext: CoroutineContext? = null
@@ -1542,6 +1549,7 @@ class NativeJsScope(
         if (localRt != null) {
             JS_FreeRuntime(localRt)
         }
+        budgetRef.dispose()
         // 清理 JsExtensions 桥接器 handle 表 (防止 Kotlin 对象内存泄漏)
         for (handle in handles) {
             NativeJsExtensionsBridge.unregisterObject(handle)

@@ -1,5 +1,7 @@
 package io.legado.desktop.model.fileBook
 
+import io.legado.app.help.file.safeBookFilePath
+import io.legado.app.help.file.requireBookFileName
 import io.legado.app.constant.BookType
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.AppDbProviders
@@ -299,6 +301,7 @@ class DesktopFileBookAccessor(
         fileName: String,
         source: BaseSource?
     ): String {
+        requireBookFileName(fileName)
         // app 端走 SAF + defaultBookTreeUri; desktop 走 WebDav/AnalyzeUrl 取流 + saveBookFile(inputStream)
         val inputStream = if (!str.startsWith(BookType.webDavTag)) {
             AnalyzeUrlCore(
@@ -320,10 +323,10 @@ class DesktopFileBookAccessor(
         // 好让既有 `Throwable.isSecurityException()` 的调用方 (RemoteBookViewModelShared 的
         // onPermissionDenied / ReaderScreenModel 的权限请求链) 拉起"去设置目录"出口;
         // 原版该分支同样是 `catch (e: Exception)` 包住整段写 (含 copyTo), 故此处不另分类型。
-        val file = File(bookSaveDir(), fileName)
+        val file = File(safeBookFilePath(bookSaveDir().path, fileName))
         inputStream.use { input ->
             try {
-                file.outputStream().use { output -> input.copyTo(output) }
+                io.legado.app.help.copyToFileAtomically(file.path, input)
             } catch (e: Exception) {
                 throw SecurityException("请重新设置书籍保存位置\nPermission Denial\n$e").apply {
                     addSuppressed(e)
@@ -355,7 +358,7 @@ class DesktopFileBookAccessor(
      * 其余异常照旧透传。
      */
     override suspend fun saveBookFileFromWebDav(webDav: WebDav, fileName: String): String {
-        val file = File(bookSaveDir(), fileName)
+        val file = File(safeBookFilePath(bookSaveDir().path, fileName))
         // 分辨"保存位置不可用"与网络/传输异常: 前者按 app 端文件路径分支的口径给出权限类提示,
         // 后者原样透传。落盘要在目标目录里建临时件再改名, 所以探的是"能否在目标目录里建出
         // 临时件" (名字用共享契约生成, 探完即删); 探目标文件本身会在下载失败时留下 0 字节的同名文件。

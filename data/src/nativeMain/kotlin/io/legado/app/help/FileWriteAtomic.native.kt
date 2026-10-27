@@ -7,6 +7,8 @@ import io.legado.app.utils.atomicWriteTempPath
 import io.legado.app.utils.ensureParentDirectory
 import okio.FileSystem
 import okio.Path.Companion.toPath
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /** 通道 → 文件的拷贝块大小 (64KB): 内存占用只有这一块复用缓冲区, 与文件体积无关。 */
 private const val CHANNEL_COPY_BUFFER_SIZE = 64 * 1024
@@ -32,6 +34,7 @@ suspend fun copyToFileAtomically(path: String, channel: ByteReadChannel) {
         FileSystem.SYSTEM.write(tempPath.toPath()) {
             val buffer = ByteArray(CHANNEL_COPY_BUFFER_SIZE)
             while (true) {
+                currentCoroutineContext().ensureActive()
                 val n = channel.readAvailable(buffer, 0, buffer.size)
                 if (n == -1) break
                 if (n > 0) write(buffer, 0, n)

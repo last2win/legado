@@ -1,7 +1,7 @@
 package io.legado.app.help.file
 
 import io.ktor.client.HttpClient
-import io.ktor.client.request.get
+import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.isSuccess
 import io.legado.app.help.copyToFileAtomically
@@ -42,14 +42,15 @@ class NativeFileDownloader : FileDownloader {
                 deleteOrphanAtomicWriteTempFilesInDir(destPath)
                 val client = HttpClient()
                 try {
-                    val response = client.get(url.canonicalizeUri())
-                    if (!response.status.isSuccess()) {
-                        false
-                    } else {
-                        val targetPath =
-                            if (destPath.endsWith("/")) "$destPath$fileName" else "$destPath/$fileName"
-                        copyToFileAtomically(targetPath, response.bodyAsChannel())
-                        true
+                    client.prepareGet(url.canonicalizeUri()).execute { response ->
+                        if (!response.status.isSuccess()) {
+                            false
+                        } else {
+                            val targetPath =
+                                safeBookFilePath(destPath, fileName)
+                            copyToFileAtomically(targetPath, response.bodyAsChannel())
+                            true
+                        }
                     }
                 } finally {
                     client.close()

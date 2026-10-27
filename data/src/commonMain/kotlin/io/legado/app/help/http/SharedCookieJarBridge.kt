@@ -18,7 +18,7 @@ import io.legado.app.utils.NetworkUtils
  *
  * # 1:1 对照 app 端 CookieManager
  * - [loadRequest]: 对照 `CookieManager.loadRequest` — domain 提取 / getCookie(domain) /
- *   mergeCookies(requestCookie, storeCookie) / header 设置 / catch 清除;
+ *   mergeRequestCookies(storeCookie, requestCookie) / header 设置 / catch 清除;
  * - [saveResponse]: 对照 `CookieManager.saveResponse` → `saveCookiesFromHeaders` —
  *   parseResponseCookies / persistent·session 分区 / updateSessionCookie + replaceCookie。
  *
@@ -48,7 +48,7 @@ class SharedCookieJarBridge : CookieJarBridge {
         val storeCookie = store.getCookieForSource(request.header(cookieScopeHeader), urlString)
         val requestCookie = request.header("Cookie")
 
-        val newCookie = mergeCookies(requestCookie, storeCookie) ?: return request
+        val newCookie = mergeRequestCookies(storeCookie, requestCookie) ?: return request
 
         return try {
             request.newBuilder()

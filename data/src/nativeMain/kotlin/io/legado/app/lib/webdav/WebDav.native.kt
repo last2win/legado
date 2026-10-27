@@ -16,22 +16,20 @@ import io.legado.app.utils.findNS
 import io.legado.app.utils.findNSPrefix
 import io.legado.app.utils.toInputStream
 import io.ktor.client.HttpClient
-import io.ktor.client.request.delete
-import io.ktor.client.request.get
+import io.ktor.client.request.prepareGet
+import io.legado.app.help.http.readLimitedBody
 import io.ktor.client.request.header
-import io.ktor.client.request.put
-import io.ktor.client.request.request
+import io.ktor.client.request.prepareRequest
+import io.ktor.client.request.preparePut
+import io.ktor.client.request.prepareDelete
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
-import io.ktor.client.statement.bodyAsBytes
 import io.ktor.client.statement.bodyAsChannel
-import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.http.withCharset
-import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.charsets.Charsets
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -173,7 +171,7 @@ actual open class WebDav actual constructor(
         val url = httpUrl ?: return null
         return kotlin.runCatching {
             withContext(Dispatchers.Default) {
-                webDavClient.request(url) {
+                webDavClient.prepareRequest(url) {
                     method = HttpMethod("PROPFIND")
                     header(authorization.name, authorization.data)
                     header("Depth", depth.toString())
@@ -181,14 +179,14 @@ actual open class WebDav actual constructor(
                     // 注意：尽量手动指定需要返回的属性。若返回全部属性，可能后由于Prop.java里没有该属性名，而崩溃。
                     contentType(ContentType.Application.Xml.withCharset(Charsets.UTF_8))
                     setBody(requestPropsStr)
+                }.execute { response ->
+                    checkResult(response)
+                    response.readLimitedBody().decodeToString()
                 }
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
-        }.getOrThrow().let { resp ->
-            checkResult(resp)
-            resp.bodyAsText()
-        }
+        }.getOrThrow()
     }
 
     /**
@@ -263,14 +261,14 @@ actual open class WebDav actual constructor(
         val url = httpUrl ?: return false
         return kotlin.runCatching {
             withContext(Dispatchers.Default) {
-                webDavClient.request(url) {
+                webDavClient.prepareRequest(url) {
                     method = HttpMethod("PROPFIND")
                     header(authorization.name, authorization.data)
                     header("Depth", "0")
                     contentType(ContentType.Application.Xml)
                     setBody(EXISTS)
-                }
-            }.status.isSuccess()
+                }.execute { it.status.isSuccess() }
+            }
         }.onFailure {
             currentCoroutineContext().ensureActive()
         }.getOrDefault(false)
@@ -283,13 +281,13 @@ actual open class WebDav actual constructor(
         val url = httpUrl ?: return true
         return kotlin.runCatching {
             withContext(Dispatchers.Default) {
-                webDavClient.request(url) {
+                webDavClient.prepareRequest(url) {
                     method = HttpMethod("PROPFIND")
                     header(authorization.name, authorization.data)
                     header("Depth", "0")
                     contentType(ContentType.Application.Xml)
                     setBody(EXISTS)
-                }.status.value != 401
+                }.execute { it.status.value != 401 }
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
@@ -306,11 +304,11 @@ actual open class WebDav actual constructor(
         return kotlin.runCatching {
             if (!exists()) {
                 withContext(Dispatchers.Default) {
-                    webDavClient.request(url) {
+                    webDavClient.prepareRequest(url) {
                         method = HttpMethod("MKCOL")
                         header(authorization.name, authorization.data)
-                    }
-                }.let { checkResult(it) }
+                    }.execute { checkResult(it) }
+                }
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
@@ -347,10 +345,12 @@ actual open class WebDav actual constructor(
         val url = httpUrl ?: throw WebDavException("WebDav下载出错\nurl为空")
         kotlin.runCatching {
             withContext(Dispatchers.Default) {
-                val channel: ByteReadChannel = webDavClient.get(url) {
+                webDavClient.prepareGet(url) {
                     header(authorization.name, authorization.data)
-                }.bodyAsChannel()
-                copyToFileAtomically(savedPath, channel)
+                }.execute { response ->
+                    check(response.status.isSuccess()) { "WebDAV HTTP ${response.status.value}" }
+                    copyToFileAtomically(savedPath, response.bodyAsChannel())
+                }
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
@@ -366,9 +366,9 @@ actual open class WebDav actual constructor(
         val url = httpUrl ?: throw WebDavException("WebDav下载出错\nurl为空")
         return kotlin.runCatching {
             withContext(Dispatchers.Default) {
-                webDavClient.get(url) {
+                webDavClient.prepareGet(url) {
                     header(authorization.name, authorization.data)
-                }.bodyAsBytes()
+                }.execute { it.readLimitedBody() }
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
@@ -410,12 +410,12 @@ actual open class WebDav actual constructor(
         kotlin.runCatching {
             withContext(Dispatchers.Default) {
                 val url = httpUrl ?: throw NoStackTraceException("url不能为空")
-                webDavClient.put(url) {
+                webDavClient.preparePut(url) {
                     header(authorization.name, authorization.data)
                     // 务必注意RequestBody不要嵌套，不然上传时内容可能会被追加多余的文件信息
                     this.contentType(ContentType.parse(contentType))
                     setBody(byteArray)
-                }.let { checkResult(it) }
+                }.execute { checkResult(it) }
             }
         }.onFailure {
             currentCoroutineContext().ensureActive()
@@ -443,10 +443,10 @@ actual open class WebDav actual constructor(
         //防止报错
         return kotlin.runCatching {
             withContext(Dispatchers.Default) {
-                webDavClient.delete(url) {
+                webDavClient.prepareDelete(url) {
                     header(authorization.name, authorization.data)
-                }
-            }.let { checkResult(it) }
+                }.execute { checkResult(it) }
+            }
         }.onFailure {
             currentCoroutineContext().ensureActive()
             AppLog.put("WebDav删除失败\n${it.message}", it)
@@ -477,7 +477,7 @@ actual open class WebDav actual constructor(
         if (!response.status.isSuccess()) {
             val code = response.status.value
             // 错误时才读 body (避免消耗成功响应的流)
-            val body = kotlin.runCatching { response.bodyAsText() }.getOrDefault("")
+            val body = kotlin.runCatching { response.readLimitedBody().decodeToString() }.getOrDefault("")
             if (code == 401) {
                 // 对齐 jvmAndAndroidMain: response.headers("WWW-Authenticate") 返回 List<String>
                 // Ktor 用 headers.getAll 取所有值 (单值场景行为一致)

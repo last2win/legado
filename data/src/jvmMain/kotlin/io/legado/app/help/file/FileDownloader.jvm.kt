@@ -36,7 +36,7 @@ class DesktopFileDownloader : FileDownloader {
                 deleteOrphanAtomicWriteTempFilesInDir(destPath)
                 val request = Request.Builder().url(url).build()
                 // 目标目录不存在时由整份写入契约建立 (临时件与目标同目录)
-                val targetPath = Paths.get(destPath, fileName).toString()
+                val targetPath = safeBookFilePath(destPath, fileName)
 
                 getOkHttpClient().newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
