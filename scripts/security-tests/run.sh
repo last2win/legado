@@ -18,6 +18,7 @@ common=core/src/commonMain/kotlin/io/legado/app/web/api/WebAccess.kt
   foundation/src/commonMain/kotlin/io/legado/app/constant/PreferKey.kt \
   data/src/commonMain/kotlin/io/legado/app/help/storage/BackupPreferencePolicy.kt \
   data/src/commonMain/kotlin/io/legado/app/help/file/SafeBookFile.kt \
+  data/src/commonMain/kotlin/io/legado/app/help/archive/ArchiveEntryNames.kt \
   data/src/commonMain/kotlin/io/legado/app/help/http/CookieUtils.kt \
   data/src/commonMain/kotlin/io/legado/app/help/storage/ArchiveLimits.kt \
   data/src/commonMain/kotlin/io/legado/app/help/storage/ArchiveReadLimits.kt \

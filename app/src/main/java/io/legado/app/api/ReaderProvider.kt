@@ -6,6 +6,9 @@ package io.legado.app.api
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.UriMatcher
+import android.content.pm.PackageManager
+import android.os.Binder
+import android.os.Process
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
@@ -14,7 +17,7 @@ import io.legado.app.web.api.WebApiRequest
 import kotlinx.coroutines.runBlocking
 
 /**
- * Export book data to other app.
+ * Export book data only to this app or an app signed by the same certificate.
  *
  * 与 web 服务共用同一 [WebApi] 路由层: 每个 RequestCode 映射为等价的 web path，
  * 经 [WebApi.handle] 分派后把 ReturnData 序列化进游标 (路径/参数/JSON 结构零改动)。
@@ -36,11 +39,11 @@ class ReaderProvider : ContentProvider() {
                 addURI(authority, "bookSources/delete", RequestCode.DeleteBookSources.ordinal)
                 addURI(authority, "bookSource/query", RequestCode.GetBookSource.ordinal)
                 addURI(authority, "bookSources/query", RequestCode.GetBookSources.ordinal)
-                addURI(authority, "rssSource/insert", RequestCode.SaveBookSource.ordinal)
-                addURI(authority, "rssSources/insert", RequestCode.SaveBookSources.ordinal)
-                addURI(authority, "rssSources/delete", RequestCode.DeleteBookSources.ordinal)
-                addURI(authority, "rssSource/query", RequestCode.GetBookSource.ordinal)
-                addURI(authority, "rssSources/query", RequestCode.GetBookSources.ordinal)
+                addURI(authority, "rssSource/insert", RequestCode.SaveRssSource.ordinal)
+                addURI(authority, "rssSources/insert", RequestCode.SaveRssSources.ordinal)
+                addURI(authority, "rssSources/delete", RequestCode.DeleteRssSources.ordinal)
+                addURI(authority, "rssSource/query", RequestCode.GetRssSource.ordinal)
+                addURI(authority, "rssSources/query", RequestCode.GetRssSources.ordinal)
                 addURI(authority, "book/insert", RequestCode.SaveBook.ordinal)
                 addURI(authority, "books/query", RequestCode.GetBookshelf.ordinal)
                 addURI(authority, "book/refreshToc/query", RequestCode.RefreshToc.ordinal)
@@ -62,10 +65,10 @@ class ReaderProvider : ContentProvider() {
         selection: String?,
         selectionArgs: Array<String>?
     ): Int {
+        enforceCaller(uri)
         if (sMatcher.match(uri) < 0) return -1
         val path = when (RequestCode.entries[sMatcher.match(uri)]) {
             RequestCode.DeleteBookSources -> "/deleteBookSources"
-            RequestCode.DeleteRssSources -> "/deleteBookSources"
             else -> throw IllegalStateException(
                 "Unexpected value: " + RequestCode.entries[sMatcher.match(uri)].name
             )
@@ -76,9 +79,13 @@ class ReaderProvider : ContentProvider() {
         return 0
     }
 
-    override fun getType(uri: Uri) = throw UnsupportedOperationException("Not yet implemented")
+    override fun getType(uri: Uri): String? {
+        enforceCaller(uri)
+        throw UnsupportedOperationException("Not yet implemented")
+    }
 
     override fun insert(uri: Uri, values: ContentValues?): Uri? {
+        enforceCaller(uri)
         if (sMatcher.match(uri) < 0) return null
         val path = when (RequestCode.entries[sMatcher.match(uri)]) {
             RequestCode.SaveBookSource -> "/saveBookSource"
@@ -108,6 +115,7 @@ class ReaderProvider : ContentProvider() {
         uri: Uri, projection: Array<String>?, selection: String?,
         selectionArgs: Array<String>?, sortOrder: String?
     ): Cursor? {
+        enforceCaller(uri)
         val map: MutableMap<String, ArrayList<String>> = HashMap()
         uri.getQueryParameter("url")?.let {
             map["url"] = arrayListOf(it)
@@ -140,7 +148,27 @@ class ReaderProvider : ContentProvider() {
     override fun update(
         uri: Uri, values: ContentValues?, selection: String?,
         selectionArgs: Array<String>?
-    ) = throw UnsupportedOperationException("Not yet implemented")
+    ): Int {
+        enforceCaller(uri)
+        throw UnsupportedOperationException("Not yet implemented")
+    }
+
+    private fun enforceCaller(uri: Uri) {
+        val caller = Binder.getCallingUid()
+        val owner = Process.myUid()
+        if (caller != owner && context?.packageManager?.checkSignatures(caller, owner) != PackageManager.SIGNATURE_MATCH) {
+            throw SecurityException("ReaderProvider requires the app signing certificate")
+        }
+        // RSS was migrated to typed BookSource records. Legacy RSS payloads must never reach
+        // the unrestricted book-source CRUD routes (which could overwrite/delete unrelated sources).
+        when (sMatcher.match(uri)) {
+            RequestCode.SaveRssSource.ordinal, RequestCode.SaveRssSources.ordinal,
+            RequestCode.DeleteRssSources.ordinal, RequestCode.GetRssSource.ordinal,
+            RequestCode.GetRssSources.ordinal -> throw UnsupportedOperationException(
+                "Legacy RSS provider API is unsupported; use the typed book-source API"
+            )
+        }
+    }
 
 
     /**

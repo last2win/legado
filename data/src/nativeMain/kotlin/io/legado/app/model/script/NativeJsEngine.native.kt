@@ -1478,6 +1478,7 @@ class NativeJsScope internal constructor(
     /** native 上 dangerousApi 语义为 no-op (无 Java 反射可旁路), 保留字段仅为接口对齐 */
     var dangerousApi: Boolean = false
 ) : JsScope {
+    init { liveScopes.incrementAndGet() }
     var rt: CPointer<JSRuntime>? = rt
         private set
     var ctx: CPointer<JSContext>? = ctx
@@ -1536,6 +1537,7 @@ class NativeJsScope internal constructor(
             JS_FreeRuntime(localRt)
         }
         budgetRef.dispose()
+        liveScopes.decrementAndGet()
         // 清理 JsExtensions 桥接器 handle 表 (防止 Kotlin 对象内存泄漏)
         for (handle in handles) {
             NativeJsExtensionsBridge.unregisterObject(handle)
@@ -1543,8 +1545,10 @@ class NativeJsScope internal constructor(
         handles.clear()
     }
 
-    private companion object {
-        const val MAX_RECURSION = 10
+    internal companion object {
+        private val liveScopes = kotlinx.atomicfu.atomic(0)
+        internal val liveScopeCount: Int get() = liveScopes.value
+        private const val MAX_RECURSION = 10
     }
 }
 

@@ -18,7 +18,7 @@
 </template>
 
 <script setup lang="ts">
-import { isLegadoUrl } from '@/utils/utils'
+import { chapterHtml } from '@/utils/chapterHtml'
 import API from '@api'
 import jump from '@/plugins/jump'
 import type { webReadConfig } from '@/web'
@@ -40,37 +40,13 @@ const props = defineProps<{
 
 const imgPattern = /<img[^>]*src=['"]([^'"]*(?:['"][^>]+\})?)['"][^>]*>/g
 
-const replaceImage = (content: string) => {
-  return content.replace(imgPattern, (match, src) => {
-    if (src.startsWith('/image?') || src.startsWith('image?')) {
-      const absSrc = API.getProxyImageUrl(bookUrl.value, src)
-      return match.replace(src, absSrc)
-    }
-    if (props.hasImageDecode || isLegadoUrl(src)) {
-      const proxySrc = API.getProxyImageUrl(
-        bookUrl.value,
-        src,
-      )
-      return match.replace(src, proxySrc)
-    }
-    return match
-  })
-}
+const replaceImage = (content: string) => chapterHtml(content,
+  src => API.getProxyImageUrl(bookUrl.value, src))
 
 const getImageSrc = (content: string) => {
-  const imgPattern = /<img[^>]*src=['"]([^'"]*(?:['"][^>]+\})?)['"][^>]*>/
-  const match = content.match(imgPattern)
-  if (!match) return ''
-  const src = match[1] //reg tested in template
-  if (src.startsWith('/image?') || src.startsWith('image?')) {
-    return API.getProxyImageUrl(bookUrl.value, src)
-  }
-  if (props.hasImageDecode || isLegadoUrl(src))
-    return API.getProxyImageUrl(
-      bookUrl.value,
-      src,
-    )
-  return src
+  const holder = document.createElement('div')
+  holder.innerHTML = replaceImage(content)
+  return holder.querySelector('img')?.getAttribute('src') ?? ''
 }
 const proxyImage = (event: Event) => {
   /* 获取IMG标签原始的src
@@ -80,6 +56,9 @@ const proxyImage = (event: Event) => {
     (event.target as HTMLImageElement)?.getAttribute("src")  返回/test
   */
   const src = (event.target as HTMLImageElement)?.getAttribute("src")
+  const img = event.target as HTMLImageElement
+  if (img.dataset.proxyRetried) return
+  img.dataset.proxyRetried = 'true'
   if (src != null && src.length > 0) {
     (event.target as HTMLImageElement).src = API.getProxyImageUrl(
       bookUrl.value,

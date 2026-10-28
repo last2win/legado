@@ -43,9 +43,11 @@ jobs:
       # LICENSE 在清单里: vendored 第三方源码应随带上游许可证原件 (已于 2026-08-29 补齐)。
       - name: Resolve upstream ref
         id: resolve
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
-          REF='${{ inputs.ref }}'
+          REF="$REQUESTED_REF"
           echo "请求的 ref: $REF"
           SHA=$(git ls-remote "https://github.com/$UPSTREAM.git" "$REF" | awk '{print $1}' | head -n1)
           if [ -z "$SHA" ]; then
@@ -54,6 +56,10 @@ jobs:
             echo "ls-remote 未命中, 按 commit sha 处理: $SHA"
           else
             echo "解析为 commit: $SHA"
+          fi
+          if [[ ! "$SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Upstream ref did not resolve to a complete commit SHA"
+            exit 1
           fi
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "### 上游 ref" >> "$GITHUB_STEP_SUMMARY"
@@ -72,79 +78,18 @@ jobs:
           echo "同步清单 ($(wc -l < /tmp/files.txt) 个文件):"
           cat /tmp/files.txt
 
-      - name: Download upstream files
-        run: |
-          set -euo pipefail
-          SHA='${{ steps.resolve.outputs.sha }}'
-          mkdir -p /tmp/upstream
-          fail=0
-          while read -r f; do
-            url="https://raw.githubusercontent.com/$UPSTREAM/$SHA/$f"
-            code=$(curl -sL -w '%{http_code}' -o "/tmp/upstream/$f" "$url" || echo 000)
-            if [ "$code" = "200" ]; then
-              printf '  [OK  %s] %-32s %s bytes\n' "$code" "$f" "$(stat -c%s "/tmp/upstream/$f")"
-            else
-              printf '  [FAIL %s] %-32s <上游该 ref 下不存在?>\n' "$code" "$f"
-              rm -f "/tmp/upstream/$f"
-              fail=1
-            fi
-          done < /tmp/files.txt
-          if [ "$fail" = "1" ]; then
-            echo "::warning::部分文件在上游该 ref 下不存在, 见上方 FAIL 行。可能是上游重命名/删除了文件, 需人工确认。"
-          fi
+      - name: Download every upstream file
+        env:
+          UPSTREAM_SHA: ${{ steps.resolve.outputs.sha }}
+        run: >-
+          python3 scripts/quickjs-upstream.py download --files /tmp/files.txt
+          --staging /tmp/upstream --vendor "$VENDOR_DIR" --sha "$UPSTREAM_SHA"
 
-      # 本仓库 core.autocrlf=true, Windows 工作树是 CRLF 但 committed blob 是 LF。
-      # runner 上 checkout 出来就是 LF, 但仍统一归一化, 避免误报成"本地改动"。
-      - name: Diff against vendored copy
+      - name: Compare every vendored file
         id: diff
-        run: |
-          set -uo pipefail
-          changed=0
-          {
-            echo "### 逐文件比对结果"
-            echo ""
-            echo "| 文件 | 结果 |"
-            echo "| --- | --- |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          while read -r f; do
-            up="/tmp/upstream/$f"
-            local_f="$VENDOR_DIR/$f"
-            if [ ! -f "$up" ]; then
-              echo "  [SKIP] $f  (未下载成功)"
-              echo "| \`$f\` | ⚠️ 下载失败 |" >> "$GITHUB_STEP_SUMMARY"
-              continue
-            fi
-            if [ ! -f "$local_f" ]; then
-              echo "  [MISSING-LOCAL] $f  (上游有, 本地缺 → 将新增)"
-              echo "| \`$f\` | ➕ 本地缺失 |" >> "$GITHUB_STEP_SUMMARY"
-              changed=1
-              continue
-            fi
-            tr -d '\r' < "$local_f" > /tmp/a
-            tr -d '\r' < "$up"      > /tmp/b
-            if cmp -s /tmp/a /tmp/b; then
-              echo "  [IDENTICAL] $f"
-              echo "| \`$f\` | ✅ 一致 |" >> "$GITHUB_STEP_SUMMARY"
-            else
-              n=$(diff /tmp/a /tmp/b | grep -c '^[<>]' || true)
-              nw=$(diff -w -B /tmp/a /tmp/b | grep -c '^[<>]' || true)
-              if [ "$nw" = "0" ]; then
-                echo "  [DIFF-WHITESPACE-ONLY] $f  ($n 行, 忽略空白后为 0 → 纯格式差异)"
-                echo "| \`$f\` | 🟡 仅空白差异 ($n 行) |" >> "$GITHUB_STEP_SUMMARY"
-              else
-                echo "  [DIFF-SUBSTANTIVE] $f  ($n 行, 忽略空白后仍有 $nw 行 → 实质改动)"
-                echo "| \`$f\` | 🔴 实质差异 ($nw 行) |" >> "$GITHUB_STEP_SUMMARY"
-              fi
-              echo "----- diff $f (前 80 行) -----"
-              diff -u /tmp/a /tmp/b | head -n 80
-              echo "----- end $f -----"
-              changed=1
-            fi
-          done < /tmp/files.txt
-
-          echo "changed=$changed" >> "$GITHUB_OUTPUT"
-          echo "汇总: changed=$changed"
+        run: >-
+          python3 scripts/quickjs-upstream.py compare --files /tmp/files.txt
+          --staging /tmp/upstream --vendor "$VENDOR_DIR"
 
       - name: Verify verdict
         if: inputs.mode == 'verify'
@@ -157,7 +102,7 @@ jobs:
           else
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "🔴 **存在差异**: 见上表与作业日志。要么 ref 选错了, 要么有人绕过流程改了源码。" >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::vendored 副本与上游 ${{ inputs.ref }} 不一致。若非有意升级, 说明有人直接改了 $VENDOR_DIR 下的源码 —— 定制必须走 cinterop/JNI wrapper 层或编译开关; 万不得已改源码须登记该目录 README 的 B 类小节, 见该 README。"
+            echo "::error::vendored 副本与上游 所选 ref 不一致。若非有意升级, 说明有人直接改了 $VENDOR_DIR 下的源码 —— 定制必须走 cinterop/JNI wrapper 层或编译开关; 万不得已改源码须登记该目录 README 的 B 类小节, 见该 README。"
             exit 1
           fi
 
@@ -166,7 +111,7 @@ jobs:
         run: |
           set -euo pipefail
           while read -r f; do
-            [ -f "/tmp/upstream/$f" ] || continue
+            test -s "/tmp/upstream/$f"
             cp "/tmp/upstream/$f" "$VENDOR_DIR/$f"
             echo "  [WROTE] $VENDOR_DIR/$f"
           done < /tmp/files.txt
@@ -198,10 +143,9 @@ jobs:
 
             ## 逐文件 diff 摘要
 
-            见本次运行的 **Job Summary** 表格（✅ 一致 / 🟡 仅空白 / 🔴 实质差异 / ➕ 新增），
-            以及 `Diff against vendored copy` 步骤日志里每个文件的前 80 行 unified diff。
+            见 `Compare every vendored file` 日志。下载缺失或比较不完整直接失败，不产生一致性结论。
 
-            ## 需人工验证：各端编译（CI 不覆盖 native 编译, 必须本地跑）
+            ## 需人工验证：各端编译（CI 覆盖 iOS，鸿蒙仍需对应 SDK）
 
             - [ ] **Android / JVM (JNI + CMake)** —
                   `./gradlew :modules:quickjs-android-native:externalNativeBuildAppDebug`

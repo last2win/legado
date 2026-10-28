@@ -190,3 +190,35 @@ EPUB 测试夹具补齐 ZIP 根目录文件；生产解析器允许读取包内�
 本地独立测试通过 81 条边界断言、35 条归档入口断言及 35 项 JUnit 测试。
 新增 Room/QuickJS/HTTP 用例与全量 iOS 构建的结果须查看本提交 Actions；本地 Linux
 独立测试不能代替 iOS 编译、模拟器执行或真机回归。
+
+## 初始化、外部入口与供应链补充（2026-10-28）
+
+- Native 共享 jsLib 在初始化和 LRU 交接异常时关闭新 scope，并移除失效缓存条目。
+  真实 QuickJS 测试核对语法错误、脚本异常、取消、64 MiB 堆超限及 30 秒期限触发后，
+  活跃 scope 数恢复到基线，覆盖 runtime 和中断回调 StableRef 的清理路径。
+- 远程 ZIP 导入先验证完整归档路径，再转成单文件名；不同目录下同名条目用路径摘要区分，
+  不放宽公共保存接口的单文件限制。RemoteZip 在图片、文本和异常分支均关闭。
+- Android ReaderProvider 声明 signature 权限，同时在每个 CRUD 入口检查 Binder UID／签名，
+  通过后才允许设置 `trustedLocalCall`。第三方普通签名 App 不再能直接读取或修改阅读数据。
+  RSS 已迁移为统一 BookSource 模型，旧 `rssSource(s)/*` URI 明确报不支持，不能转入普通
+  书源 CRUD；现有 RSS 使用统一的带类型书源接口。
+- Web 管理页面不执行书源 jsLib（规则仍由后端脚本引擎处理）。章节 HTML 使用固定版本
+  DOMPurify 和格式标签白名单；图片统一经过 image 入口，不能用任意同源 img URL 发起管理请求。
+  `modules/web/tests/security.spec.ts` 在 Chromium 中挂载真实 Vue 组件，检查正常正文、图片、
+  HTML 攻击和三种 jsLib 形式。上一版生产文件不能通过这四个用例；当前实现通过。
+  打包的单文件 HTML 同步入库，CI 再次构建并比对，避免只修改源码而继续发布旧资源。
+- 安全 CI 对所有 push/PR 运行，涵盖 Android、Web、vendored 引擎与构建配置的改动。
+  QuickJS 同步校验在下载缺失、网络失败、文件缺失时直接失败，完成全部文件比较后才输出结论；
+  工作流 ref 经环境变量传入并验证完整 SHA，不能通过字符串插入 shell。
+- Cronet 固定 Google 官方 Maven 当前 AAR 的四种 ABI SHA-256，在下载完成、缓存安装和
+  `System.load` 前校验。未知版本/ABI、旧的不可信缓存和篡改库全部拒绝；升级 Cronet 版本时
+  必须同步核实并更新摘要。HEAD 响应和 RemoteZip 也增加了明确关闭。
+- 默认 GitHub 更新仓库改为 `last2win/legado`。
+
+本地 Android 入口命令为 `bash scripts/security-tests/run-android-ingress.sh`，使用与 `run.sh`
+相同的编译器环境；可设置 `CRONET_TEST_AAR` 指向官方 143.7445.0 AAR，验证四种 ABI 正常与
+篡改文件。该测试直接编译生产 ReaderProvider 和摘要验证器，但 Binder、Android 框架、数据库
+路由使用测试替身；不能据此声称已在 Android 设备验证跨应用权限。CI 另编译真实 Android App。
+`python3 scripts/security-tests/test_quickjs_upstream.py` 验证下载失败与比较完整性。
+Web 回归：在 `modules/web` 执行 `pnpm install --frozen-lockfile`、`pnpm exec playwright install chromium`
+和 `pnpm exec playwright test`（Node 22）。iOS 回归与完整 App 构建仍以当前提交 Actions 为准。

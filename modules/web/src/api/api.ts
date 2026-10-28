@@ -309,10 +309,12 @@ const getProxyImageUrl = (
   src: string,
   _width?: number | `${number}`,
 ) => {
-  if (legado_http_entry_point && src.startsWith(legado_http_entry_point)) return src
-  if (src.startsWith('/image?') || src.startsWith('image?')) {
-    return toAbsoluteUrl(src)
-  }
+  const endpoint = new URL('image', legado_http_entry_point)
+  try {
+    const candidate = new URL(src, legado_http_entry_point)
+    if (candidate.origin === endpoint.origin && candidate.pathname === endpoint.pathname &&
+      !candidate.username && !candidate.password) return candidate.toString()
+  } catch { /* Treat non-URL book image rules as opaque proxy input. */ }
   return new URL(
     'image?path=' +
       encodeURIComponent(src) +

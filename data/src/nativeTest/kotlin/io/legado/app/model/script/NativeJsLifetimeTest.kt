@@ -18,6 +18,23 @@ import org.jsoup.internal.HttpConnectionRequest
 
 /** Run on macOS with :data:iosSimulatorArm64Test; exercises the actual QuickJS bridge. */
 class NativeJsLifetimeTest {
+    @Test fun failedSharedLibraryInitializationReleasesRuntime() {
+        val provider = NativeQuickJsSharedJsScopeProvider
+        val baseline = NativeJsScope.liveScopeCount
+        for (script in listOf("function (", "throw new Error('init failed')", "new ArrayBuffer(80 * 1024 * 1024)")) {
+            repeat(3) {
+                assertFailsWith<NativeScriptException> { provider.getScope(script, false, null) }
+                assertEquals(baseline, NativeJsScope.liveScopeCount, script)
+            }
+        }
+        val cancelled = kotlinx.coroutines.Job().apply { cancel() }
+        assertFailsWith<Throwable> { provider.getScope("'cancelled init'", false, cancelled) }
+        assertEquals(baseline, NativeJsScope.liveScopeCount)
+        // Exercise the real outer-call deadline, not a simulated exception from a fake engine.
+        assertFailsWith<NativeScriptException> { provider.getScope("while (true) {}", false, null) }
+        assertEquals(baseline, NativeJsScope.liveScopeCount)
+    }
+
     @Test fun sparseAndNestedResultsCannotExpandPastHostBudgets() {
         val scope = NativeJsEngine.createStandaloneScope()
         try {

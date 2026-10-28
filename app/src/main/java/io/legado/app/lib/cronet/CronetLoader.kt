@@ -28,7 +28,7 @@ object CronetLoader : CronetEngine.Builder.LibraryLoader(), Cronet.LoaderInterfa
 
     private const val soVersion = BuildConfig.Cronet_Version
     private const val aarUrl =
-        "https://maven.aliyun.com/repository/google/org/chromium/net/cronet-embedded/$soVersion/cronet-embedded-$soVersion.aar"
+        "https://dl.google.com/dl/android/maven2/org/chromium/net/cronet-embedded/$soVersion/cronet-embedded-$soVersion.aar"
     private const val soName = "libcronet.$soVersion.so"
 
     /** 中间件名每次唯一: 落于目标同目录 (见 [io.legado.app.utils.atomicWriteTempPath])。 */
@@ -71,7 +71,7 @@ object CronetLoader : CronetEngine.Builder.LibraryLoader(), Cronet.LoaderInterfa
     }
 
     fun isSoDownloaded(): Boolean {
-        return soFile.exists()
+        return verified(soFile)
     }
 
     fun hasExternalProvider(): Boolean {
@@ -104,37 +104,42 @@ object CronetLoader : CronetEngine.Builder.LibraryLoader(), Cronet.LoaderInterfa
                 // 中间件名每次唯一: 两次落盘绝不共用同一份, 谁也读不到对方写了一半的那份
                 val downloadFileTmp = File(atomicWriteTempPath(downloadFile.path))
                 try {
-                    val result = if (downloadFile.exists()) true
+                    val result = if (verified(downloadFile)) true
                     else try {
                         val webDav = WebDav(aarUrl, Authorization("", ""))
-                        val response =
-                            webDav.webDavClient.newCall(Request.Builder().url(aarUrl).head().build())
-                                .execute()
-                        val fileSize = response.header("Content-Length")?.toLong() ?: -1L
+                        val fileSize = webDav.webDavClient.newCall(Request.Builder().url(aarUrl).head().build())
+                            .execute().use { response ->
+                                if (!response.isSuccessful) throw IOException("Failed to inspect Cronet artifact")
+                                response.header("Content-Length")?.toLongOrNull() ?: -1L
+                            }
                         if (fileSize <= 0) throw IOException("Failed to get file size")
                         val remoteZip = RemoteZipWrapper(
                             { offset, length, fs -> webDav.readRange(offset, length, fs) },
                             "cronet.aar", fileSize
                         )
-                        val entry = remoteZip.entries().asSequence().find {
-                            it.name.startsWith("jni/${getCpuAbi(App.instance)}/libcronet") && it.name.endsWith(
-                                ".so"
-                            )
-                        } ?: throw IOException("SO entry not found for ${getCpuAbi(App.instance)}")
+                        try {
+                            val entry = remoteZip.entries().asSequence().find {
+                                it.name.startsWith("jni/${getCpuAbi(App.instance)}/libcronet") && it.name.endsWith(
+                                    ".so"
+                                )
+                            } ?: throw IOException("SO entry not found for ${getCpuAbi(App.instance)}")
 
-                        downloadFileTmp.parentFile?.mkdirs()
-                        remoteZip.getInputStream(entry).use { input ->
-                            downloadFileTmp.outputStream().use { output ->
-                                input.copyTo(output)
+                            downloadFileTmp.parentFile?.mkdirs()
+                            remoteZip.getInputStream(entry).use { input ->
+                                downloadFileTmp.outputStream().use { output ->
+                                    input.copyTo(output)
+                                }
                             }
-                        }
-                        downloadFileTmp.renameTo(downloadFile)
+                            if (!verified(downloadFileTmp)) throw IOException("Cronet SHA-256 mismatch or unpinned version/ABI")
+                            FileUtilsBase.replaceFileAtomically(downloadFileTmp, downloadFile)
+                            true
+                        } finally { remoteZip.close() }
                     } catch (e: Throwable) {
                         e.printStackTrace()
                         false
                     }
 
-                    if (result && downloadFile.exists()) {
+                    if (result && verified(downloadFile)) {
                         // 装载只看目标文件在不在: 半截 so 会被长期当成可用, 必须整份落到同目录临时文件再替换
                         soFile.parentFile?.mkdirs()
                         val staged = File(atomicWriteTempPath(soFile.path))
@@ -142,6 +147,7 @@ object CronetLoader : CronetEngine.Builder.LibraryLoader(), Cronet.LoaderInterfa
                             downloadFile.inputStream().use { input ->
                                 staged.outputStream().use { output -> input.copyTo(output) }
                             }
+                            if (!verified(staged)) throw IOException("Cronet staged library SHA-256 mismatch")
                             FileUtilsBase.replaceFileAtomically(staged, soFile)
                         } finally {
                             staged.delete()
@@ -172,11 +178,16 @@ object CronetLoader : CronetEngine.Builder.LibraryLoader(), Cronet.LoaderInterfa
         try {
             System.loadLibrary(libName)
         } catch (_: Throwable) {
-            if (soFile.exists()) {
-                System.load(soFile.absolutePath)
+            if (!verified(soFile)) {
+                soFile.delete()
+                throw UnsatisfiedLinkError("Cronet library is missing or failed SHA-256 verification")
             }
+            System.load(soFile.absolutePath)
         }
     }
+
+    private fun verified(file: File): Boolean =
+        CronetLibraryIntegrity.verify(file, soVersion, getCpuAbi(App.instance))
 
     @SuppressLint("DiscouragedPrivateApi")
     private fun getCpuAbi(context: Context): String {

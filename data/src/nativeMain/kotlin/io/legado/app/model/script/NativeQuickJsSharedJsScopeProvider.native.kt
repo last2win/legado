@@ -65,16 +65,23 @@ object NativeQuickJsSharedJsScopeProvider : SharedJsScopeProvider {
             return cached.scope
         }
         // 版本失效: 旧 scope 已移出 LRU, 走统一回收 (可能仍在 eval 栈上, 见 LruScopeCache)
-        cached?.let { perThread.evict(it) }
+        cached?.let { perThread.remove(key); perThread.evict(it) }
         // JsBindings 构造时自动注入 platform/image (与 desktop 手动注入 ScriptBindings 等价)
         val scope = NativeJsEngine.getRuntimeScope(JsBindings().apply {
             dangerousApi = enableDangerousApi
         }) as NativeJsScope
-        for (src in sourceEntry.sources) {
-            NativeJsEngine.eval(src, scope, coroutineContext)
+        try {
+            for (src in sourceEntry.sources) {
+                NativeJsEngine.eval(src, scope, coroutineContext)
+            }
+            perThread.put(key, CtxEntry(scope, sourceEntry.version))
+            return scope
+        } catch (failure: Throwable) {
+            // Ownership has not been handed to the cache. close() defers release during active eval.
+            perThread.remove(key)
+            scope.close()
+            throw failure
         }
-        perThread.put(key, CtxEntry(scope, sourceEntry.version))
-        return scope
     }
 
     override fun remove(jsLib: String?) {
@@ -162,6 +169,8 @@ private class LruScopeCache(private val maxSize: Int) {
             map.remove(map.keys.first())?.let { closeOrDefer(it.scope) }
         }
     }
+
+    fun remove(key: String) { map.remove(key) }
 
     /** 版本失效替换的旧 scope 也走同一回收路径 (同 key 重入时它可能正在 eval 栈上)。 */
     fun evict(entry: CtxEntry) = closeOrDefer(entry.scope)

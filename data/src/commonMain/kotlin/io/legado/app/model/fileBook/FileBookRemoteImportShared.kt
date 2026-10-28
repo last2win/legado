@@ -1,5 +1,6 @@
 package io.legado.app.model.fileBook
 
+import io.legado.app.help.archive.archiveBookFileNames
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.BookType
 import io.legado.app.data.AppDbProviders
@@ -93,26 +94,26 @@ object FileBookRemoteImportShared {
                     RangedSource { offset, length, fileSize -> webDav.readRange(offset, length, fileSize) },
                     name, size
                 )
-                val entries = remoteZip.entries().toList()
-                val hasBookFile = entries.any { !it.isDirectory && isBookFile(it.name) }
-                val hasImageFile =
-                    entries.any { !it.isDirectory && AppPattern.imgFileRegex.matches(it.name) }
-                if (hasImageFile) {
-                    importAsImage()
-                } else if (hasBookFile) {
-                    try {
-                        val entry = remoteZip.entries().asSequence()
-                            .first { !it.isDirectory && isBookFile(it.name) }
-                        val uriStr = accessor.saveBookFile(remoteZip.getInputStream(entry), entry.name)
+                try {
+                    val entries = remoteZip.entries().toList()
+                    val bookEntries = entries.filter { !it.isDirectory && isBookFile(it.name) }
+                    // Validate before removing directories; preserve distinct names in nested ZIPs.
+                    val names = archiveBookFileNames(bookEntries.map { it.name })
+                    val hasImageFile = entries.any { !it.isDirectory && AppPattern.imgFileRegex.matches(it.name) }
+                    if (hasImageFile) {
+                        importAsImage()
+                    } else if (bookEntries.isNotEmpty()) {
+                        val entry = bookEntries.first()
+                        val uriStr = accessor.saveBookFile(remoteZip.getInputStream(entry), names.getValue(entry.name))
                         accessor.importLocalFile(uriStr).apply {
                             this.origin = origin
                             addType(BookType.archive)
                             save()
                         }
-                    } finally {
-                        remoteZip.close()
-                    }
-                } else throw NoStackTraceException("不支持的压缩包格式")
+                    } else throw NoStackTraceException("不支持的压缩包格式")
+                } finally {
+                    remoteZip.close()
+                }
             }
 
             else -> accessor.importLocalFile(accessor.saveBookFile(origin, name)).apply {

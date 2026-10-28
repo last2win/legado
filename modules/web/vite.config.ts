@@ -21,6 +21,7 @@ export default defineConfig(({ mode }) => {
       }),
       viteSingleFile(),
     ],
+    optimizeDeps: { entries: mode === 'security-test' ? ['tests/fixture.html'] : ['index.html'] },
     base: mode === "development" ? "/" : "./",
     server: {
       port: 8080,

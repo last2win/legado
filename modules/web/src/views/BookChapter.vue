@@ -644,24 +644,14 @@ const ignoreKeyPress = (event: KeyboardEvent) => {
   }
 }
 
-// 书源 jsLib 动态挂载管理
-let jsLibGeneration = 0
+// Only fetch source metadata. Source scripts execute in the backend rule engine, never this origin.
+let sourceGeneration = 0
 let isComponentMounted = false
-const currentJsLibElements: HTMLElement[] = []
 
-const cleanJsLib = () => {
-  document.querySelectorAll('[data-legado-jslib]').forEach(el => el.remove())
-  currentJsLibElements.length = 0
-  if ((window as any).__LEGADO_SOURCE__) {
-    delete (window as any).__LEGADO_SOURCE__
-  }
-}
-
-const loadSourceJsLib = async (originUrl: string) => {
-  cleanJsLib()
+const loadSourceMetadata = async (originUrl: string) => {
   if (!originUrl || originUrl.startsWith('loc_')) return
 
-  const currentGen = ++jsLibGeneration
+  const currentGen = ++sourceGeneration
 
   try {
     let source: any = undefined
@@ -681,77 +671,16 @@ const loadSourceJsLib = async (originUrl: string) => {
       }
     }
 
-    if (!isComponentMounted || currentGen !== jsLibGeneration) return
+    if (!isComponentMounted || currentGen !== sourceGeneration) return
 
     if (source) {
       currentBookSource.value = source
       bookSourceType.value = source.bookSourceType
     }
 
-    const jsLib = source?.jsLib?.trim()
-    if (!jsLib) return
 
-    ;(window as any).__LEGADO_SOURCE__ = {
-      bookSourceUrl: source?.bookSourceUrl,
-      bookSourceName: source?.bookSourceName,
-      bookSourceGroup: source?.bookSourceGroup,
-    }
-
-    console.log(`[Legado Web] 正在加载书源《${source?.bookSourceName || originUrl}》的 jsLib`)
-
-    // 1. 若包含完整 <script> 标签
-    if (/<script[^>]*>/i.test(jsLib)) {
-      const parser = new DOMParser()
-      const doc = parser.parseFromString(jsLib, 'text/html')
-      const scripts = doc.querySelectorAll('script')
-      scripts.forEach(s => {
-        if (!isComponentMounted || currentGen !== jsLibGeneration) return
-        const scriptEl = document.createElement('script')
-        scriptEl.setAttribute('data-legado-jslib', 'true')
-        if (s.src) {
-          scriptEl.src = s.src
-          scriptEl.async = false
-        } else {
-          scriptEl.textContent = s.textContent
-        }
-        document.head.appendChild(scriptEl)
-        currentJsLibElements.push(scriptEl)
-      })
-      return
-    }
-
-    // 2. 若是纯脚本 URL 列表
-    const lines = jsLib.split('\n').map((l: string) => l.trim()).filter(Boolean)
-    const isAllUrls = lines.length > 0 && lines.every((l: string) => /^https?:\/\//i.test(l))
-    if (isAllUrls) {
-      lines.forEach((url: string) => {
-        if (!isComponentMounted || currentGen !== jsLibGeneration) return
-        const scriptEl = document.createElement('script')
-        scriptEl.setAttribute('data-legado-jslib', 'true')
-        scriptEl.src = url
-        scriptEl.async = false
-        document.head.appendChild(scriptEl)
-        currentJsLibElements.push(scriptEl)
-      })
-      return
-    }
-
-    // 3. 否则作为内联 JS 脚本动态执行注入
-    if (!isComponentMounted || currentGen !== jsLibGeneration) return
-    const scriptEl = document.createElement('script')
-    scriptEl.setAttribute('data-legado-jslib', 'true')
-    scriptEl.type = 'text/javascript'
-    scriptEl.textContent = `
-      try {
-        ${jsLib}
-      } catch (err) {
-        console.error('[Legado jsLib 执行错误]:', err);
-      }
-    `
-    document.head.appendChild(scriptEl)
-    currentJsLibElements.push(scriptEl)
   } catch (e) {
-    console.warn('[Legado Web] 书源 jsLib 加载失败:', e)
+    console.warn('[Legado Web] 书源信息加载失败:', e)
   }
 }
 
@@ -774,7 +703,7 @@ onMounted(async () => {
   const cover = storedBookCover || shelfBook?.coverUrl || ''
 
   if (origin) {
-    loadSourceJsLib(origin)
+    loadSourceMetadata(origin)
   }
 
   if (isNullOrBlank(bookUrl) || isNullOrBlank(name) || author === null) {
@@ -815,9 +744,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   isComponentMounted = false
-  jsLibGeneration++
+  sourceGeneration++
   contentGeneration++
-  cleanJsLib()
   window.removeEventListener('keyup', handleKeyPress)
   window.removeEventListener('keydown', ignoreKeyPress)
   window.removeEventListener('resize', onResize)

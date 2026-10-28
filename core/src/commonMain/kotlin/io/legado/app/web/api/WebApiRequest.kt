@@ -21,6 +21,6 @@ data class WebApiRequest(
     val origin: String? = null,
     /** HTTP 请求头 (全小写 key 方便查找) */
     val headers: Map<String, String> = emptyMap(),
-    /** Only Android's permission-checked in-process ContentProvider may set this. Never deserialize from HTTP. */
+    /** Only Android's permission-checked ContentProvider may set this. Never deserialize from HTTP. */
     val trustedLocalCall: Boolean = false,
 )

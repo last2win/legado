@@ -1,0 +1,22 @@
+<!doctype html><html><body><div id="fixture"></div>
+<script type="module">
+import { createApp, h } from 'vue'
+import { createPinia } from 'pinia'
+import { createRouter, createMemoryHistory } from 'vue-router'
+import ChapterContent from '../src/components/ChapterContent.vue'
+import BookChapter from '../src/views/BookChapter.vue'
+import API from '../src/api/index.ts'
+import { useBookStore } from '../src/store/bookStore.ts'
+window.mountContent = content => createApp({render: () => h(ChapterContent, {
+  title: '安全章节', chapterIndex: 0, contents: [content], spacing: {paragraph: 1, line: 1, letter: 0},
+  fontFamily: 'serif', fontSize: '18px',
+})}).use(createPinia()).mount('#fixture')
+window.mountReader = () => {
+  const router = createRouter({history: createMemoryHistory(), routes: [{path: '/', component: BookChapter}]})
+  const pinia = createPinia()
+  useBookStore(pinia).setReadingBook({bookUrl: 'book', name: '测试书', author: '', origin: 'source', chapterIndex: 0, chapterPos: 0})
+  createApp(BookChapter).use(pinia).use(router).mount('#fixture')
+}
+window.proxyImageUrl = src => API.getProxyImageUrl('book', src)
+window.ready = true
+</script></body></html>

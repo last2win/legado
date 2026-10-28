@@ -61,7 +61,7 @@ class GitHubReleaseChecker(
     }
 
     companion object {
-        const val DEFAULT_REPO = "huajideshutiao/legado"
+        const val DEFAULT_REPO = "last2win/legado"
 
         /**
          * 资产排序权重: 先按平台后缀优先级 (msi 优于 zip), 再按架构匹配度

@@ -2,6 +2,7 @@ package io.legado.app.model.fileBook
 
 import io.legado.app.constant.PreferKey
 import io.legado.app.help.file.safeBookFilePath
+import io.legado.app.help.archive.archiveBookFileNames
 import io.legado.app.help.storage.BackupPreferencePolicy
 import io.legado.app.help.http.mergeRequestCookies
 import io.legado.app.help.http.mergeRequestCookieHeader
@@ -14,6 +15,23 @@ import java.util.zip.ZipOutputStream
 import java.util.zip.ZipInputStream
 
 class PrivacyBoundaryTest {
+    @Test fun nestedArchiveEntriesSaveAsSafeDistinctFiles() {
+        val root = Files.createTempDirectory("legado-archive-names").toFile()
+        try {
+            val paths = listOf("folder/book.txt", "other/book.txt", "novel.epub")
+            val names = archiveBookFileNames(paths)
+            assertEquals(names, archiveBookFileNames(paths.reversed()))
+            assertEquals(3, names.values.toSet().size)
+            assertEquals("novel.epub", names.getValue("novel.epub"))
+            assertEquals("book.txt", archiveBookFileNames(listOf("folder/book.txt")).values.single())
+            paths.forEach { path -> java.io.File(safeBookFilePath(root.path, names.getValue(path))).writeText(path) }
+            paths.forEach { path -> assertEquals(path, java.io.File(root, names.getValue(path)).readText()) }
+            for (bad in listOf("../book.txt", "/book.txt", "a/../../book.txt", "a\\book.txt", "a/./book.txt", "a//book.txt", "a/x\u0000.txt")) {
+                assertThrows(bad, IllegalArgumentException::class.java) { archiveBookFileNames(listOf(bad)) }
+            }
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun backupZipAndRestoreExcludeCredentialsAndUnknownPreferences() {
         val all = mapOf("password" to "LOCAL_SECRET", "legado.sourceCookies.v1" to "COOKIE_SECRET",
             PreferKey.webDavPassword to "DAV_SECRET", "futureToken" to "TOKEN_SECRET",
