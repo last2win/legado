@@ -206,7 +206,7 @@ object FileBookRemoteImportShared {
             CustomUrl(webDavUrl).getUrl().substringBefore('?').substringBefore('#').substringAfterLast('/')
         } else book.originName
         val fileUriStr = accessor.saveBookFile(webDavUrl, fileName)
-        if (book.isArchive) {
+        if (book.isArchive && (fileName.endsWith(".zip", true) || fileName.endsWith(".cbz", true))) {
             // Open the downloaded archive through the platform's authorized wrapper. Do not
             // import a new Book: restoring bytes must preserve progress, custom metadata and origin.
             val archiveRef = accessor.normalizeBookRef(fileUriStr)
@@ -225,6 +225,13 @@ object FileBookRemoteImportShared {
             } finally {
                 try { opened.wrapper.close() } finally { opened.closeable?.close() }
             }
+        } else if (book.isArchive) {
+            // RAR/7z and other platform formats retain their existing importer; the ZIP factory
+            // is deliberately not a replacement for desktop commons-compress / Android libarchive.
+            val restored = accessor.importFromArchive(fileUriStr, book.originName) { name ->
+                name.contains(book.originName)
+            }.firstOrNull() ?: throw NoStackTraceException("Archive contains no matching book file")
+            book.bookUrl = restored.bookUrl
         } else {
             book.bookUrl = accessor.normalizeBookRef(fileUriStr)
         }
