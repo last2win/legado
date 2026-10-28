@@ -3,10 +3,14 @@ import android.net.Uri
 import android.database.Cursor
 import android.content.pm.PackageManager
 class Context {
-    val applicationInfo = ApplicationInfo()
+    val rootDir = java.nio.file.Files.createTempDirectory("cronet-loader").toFile()
+    val cacheDir = java.io.File(rootDir, "cache").apply { mkdirs() }
+    val applicationInfo = android.content.pm.ApplicationInfo()
+    fun getDir(name: String, mode: Int) = java.io.File(rootDir, name).apply { mkdirs() }
+    companion object { const val MODE_PRIVATE = 0 }
+
     val packageManager = PackageManager()
 }
-class ApplicationInfo { val packageName = "io.legado.test" }
 class ContentValues { fun getAsString(key: String) = "[]" }
 class UriMatcher(ignored: Int) {
     private val routes = mutableMapOf<String, Int>()

@@ -239,3 +239,25 @@ Web 回归：在 `modules/web` 执行 `pnpm install --frozen-lockfile`、`pnpm e
   `ArchiveImportStateTest` 在 iOS 上使用真实 ZIP、生产导入代码和真实 Room/SQLite，覆盖升级前
   同时改书名／作者、重复导入、歧义保留，以及同名条目导入 → 删除本地文件 → 重新下载两次。
   远程恢复测试仅替换下载传输和测试目录，实际 ZIP 解析和数据库状态均执行生产实现。
+
+### Cronet 安装热路径、签名前置校验与转换期限
+
+- 下载版 Cronet 的已验证可用状态按路径、版本、ABI、长度和修改时间缓存；下载与安装替换
+  显式失效缓存。请求热路径只检查元数据。缓存仅代表可用状态，不能授权执行原生代码：
+  下载完成、安装暂存文件及 `System.load` 前仍做完整固定摘要校验。
+- Android 入口测试直接执行生产 CronetLoader 和摘要校验器，JDK Flight Recorder 统计
+  实际库文件读取量。110 次连续／并发安装检查仅扫描一次库；旧生产 Loader 扫描 110 次。
+  另覆盖修改时间变化、损坏替换、失败后恢复、真实暂存安装、版本／ABI 变化，以及绕过
+  元数据变化的篡改仍被加载前校验拒绝。Android/provider/网络适配器仍是测试替身，不代表
+  真机耗电或耗时数据。测试使用固定摘要核对过的官方 AAR。
+- test/release 工作流共用 `scripts/prepare-android-signing.py`：严格解码 base64，以 JDK 21
+  检查 keystore、alias、两种密码及私钥/证书配对，通过后才安装签名文件并写 Gradle 配置。
+  凭据使用 Java Properties UTF-16 转义，保留空格、反斜线等字符；显式传递 JKS/PKCS12 类型。
+  诊断不打印凭据或底层异常，失败不更换原密钥。若 Secret 本身不匹配，仍需维护者更正
+  原签名身份对应的 `RELEASE_KEY_STORE/ALIAS/PASSWORD` 和 `RELEASE_STORE_PASSWORD`，不会降级为
+  debug 签名或生成新发布密钥。`test_android_signing.py` 用临时真实 JKS/PKCS12 验证正反例。
+  Android 源码编译有独立安全 CI 任务，不再依赖发布凭据是否有效。
+- Native 的 5 秒转换期限接入 QuickJS 中断回调：所有正在进行的结果／参数／字符串转换
+  共同约束 getter 和隐式转换内部执行；嵌套转换不能延长外层期限，退出时恢复原状态。
+  原 30 秒脚本期限和取消检查继续有效。真实 Native 回归用有限 8 秒的 getter／toString
+  验证约 5 秒中断及失败后 scope 仍可使用，而不是只检查 Kotlin 检查点。

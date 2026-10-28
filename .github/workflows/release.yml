@@ -77,13 +77,7 @@ jobs:
           RS_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RS_KEY_PASS: ${{ secrets.RELEASE_KEY_PASSWORD }}
           RS_STORE_PASS: ${{ secrets.RELEASE_STORE_PASSWORD }}
-        run: |
-          echo -e "\n" >> gradle.properties
-          echo RELEASE_KEY_ALIAS="$RS_ALIAS" >> gradle.properties
-          echo RELEASE_KEY_PASSWORD="$RS_KEY_PASS" >> gradle.properties
-          echo RELEASE_STORE_PASSWORD="$RS_STORE_PASS" >> gradle.properties
-          echo RELEASE_STORE_FILE='./key.jks' >> gradle.properties
-          echo "$RS_FILE" | python3 -c "import sys,base64; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read().strip()))" > $GITHUB_WORKSPACE/app/key.jks
+        run: python3 scripts/prepare-android-signing.py
 
       - name: Build Release (原包名)
         run: |

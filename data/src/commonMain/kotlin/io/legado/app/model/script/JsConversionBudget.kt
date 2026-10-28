@@ -9,8 +9,10 @@ internal class JsConversionBudget(private val checkpoint: () -> Unit = {}) {
     private var bytes = 0L
     private val started = TimeSource.Monotonic.markNow()
 
+    fun expired(): Boolean = started.elapsedNow().inWholeMilliseconds >= TIMEOUT_MILLIS
+
     fun check() {
-        require(started.elapsedNow().inWholeMilliseconds < 5_000) { "JS conversion time limit exceeded" }
+        require(!expired()) { "JS conversion time limit exceeded" }
         checkpoint()
     }
 
@@ -38,6 +40,7 @@ internal class JsConversionBudget(private val checkpoint: () -> Unit = {}) {
     }
 
     companion object {
+        const val TIMEOUT_MILLIS = 5_000L
         const val MAX_ELEMENTS = 100_000L
         const val MAX_BYTES = 16 * 1024 * 1024L
     }

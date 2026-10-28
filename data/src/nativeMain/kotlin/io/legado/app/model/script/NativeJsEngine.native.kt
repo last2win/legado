@@ -826,7 +826,7 @@ object NativeJsEngine : JsEngine {
      * 但本函数内部创建的临时 JSValue (如 array 元素、object 属性值) 会即时 JS_FreeValue。
      */
     private fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>): Any? =
-        fromJsValue(ctx, v, 0, nativeConversionBudget())
+        withNativeConversionBudget { fromJsValue(ctx, v, 0, it) }
 
     /**
      * 带深度上限的 [fromJsValue]。

@@ -11,6 +11,7 @@ import java.nio.file.Files
 import java.util.zip.ZipFile
 
 fun main() {
+    cronetLoaderRegression()
     val provider = ReaderProvider()
     fun uri(path: String) = Uri("content://io.legado.test.readerProvider/$path")
     Binder.caller = 999

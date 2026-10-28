@@ -39,7 +39,8 @@ object CronetLoader : CronetEngine.Builder.LibraryLoader(), Cronet.LoaderInterfa
     private val download = AtomicBoolean(false)
 
     @Volatile
-    private var cacheInstall = false
+    private var providerInstalled = false
+    private val installedLibrary = VerifiedLibraryCache()
 
     init {
         val cpuAbi = getCpuAbi(App.instance)
@@ -63,15 +64,16 @@ object CronetLoader : CronetEngine.Builder.LibraryLoader(), Cronet.LoaderInterfa
      * 判断Cronet是否安装完成
      */
     override fun install(): Boolean {
+        if (providerInstalled || installedLibrary.isCached(soFile, soVersion, getCpuAbi(App.instance))) return true
         synchronized(this) {
-            if (cacheInstall) return true
-            // 只要系统有潜力支持，或者本地 SO 已下载，就允许拦截器尝试初始化
-            return isHttpEngineAvailable() || hasExternalProvider() || isSoDownloaded()
+            if (providerInstalled) return true
+            providerInstalled = isHttpEngineAvailable() || hasExternalProvider()
+            return providerInstalled || isSoDownloaded()
         }
     }
 
     fun isSoDownloaded(): Boolean {
-        return verified(soFile)
+        return installedLibrary.available(soFile, soVersion, getCpuAbi(App.instance))
     }
 
     fun hasExternalProvider(): Boolean {
@@ -98,6 +100,7 @@ object CronetLoader : CronetEngine.Builder.LibraryLoader(), Cronet.LoaderInterfa
             }
             // 闸门原子地读改写: 两次并发触发都进来时, 两次落盘会共写同一份中间件
             if (!download.compareAndSet(false, true)) return@async
+            installedLibrary.invalidate()
             Coroutine.async {
                 val downloadDir = File(App.instance.cacheDir, "so_download")
                 val downloadFile = File(downloadDir, soName)
@@ -148,12 +151,14 @@ object CronetLoader : CronetEngine.Builder.LibraryLoader(), Cronet.LoaderInterfa
                                 staged.outputStream().use { output -> input.copyTo(output) }
                             }
                             if (!verified(staged)) throw IOException("Cronet staged library SHA-256 mismatch")
-                            FileUtilsBase.replaceFileAtomically(staged, soFile)
+                            synchronized(this@CronetLoader) {
+                                installedLibrary.invalidate()
+                                FileUtilsBase.replaceFileAtomically(staged, soFile)
+                                soFile.setReadable(true)
+                            }
                         } finally {
                             staged.delete()
                         }
-                        soFile.setReadable(true)
-                        cacheInstall = false
                         onComplete?.invoke(true)
                     } else {
                         downloadFile.delete()
@@ -178,11 +183,19 @@ object CronetLoader : CronetEngine.Builder.LibraryLoader(), Cronet.LoaderInterfa
         try {
             System.loadLibrary(libName)
         } catch (_: Throwable) {
-            if (!verified(soFile)) {
-                soFile.delete()
-                throw UnsatisfiedLinkError("Cronet library is missing or failed SHA-256 verification")
+            synchronized(this) {
+                // Never use the availability cache as a substitute for pre-load integrity checking.
+                if (!verified(soFile)) {
+                    installedLibrary.invalidate()
+                    soFile.delete()
+                    throw UnsatisfiedLinkError("Cronet library is missing or failed SHA-256 verification")
+                }
+                try { System.load(soFile.absolutePath) }
+                catch (failure: Throwable) {
+                    installedLibrary.invalidate()
+                    throw failure
+                }
             }
-            System.load(soFile.absolutePath)
         }
     }
 

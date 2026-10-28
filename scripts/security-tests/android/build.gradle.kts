@@ -9,7 +9,8 @@ kotlin {
     sourceSets.main {
         kotlin.setSrcDirs(listOf(".", "../../../app/src/main/java", "../../../core/src/commonMain/kotlin"))
         kotlin.include("*.kt", "io/legado/app/api/ReaderProvider.kt",
-            "io/legado/app/lib/cronet/CronetLibraryIntegrity.kt", "io/legado/app/web/api/WebApiRequest.kt")
+            "io/legado/app/lib/cronet/CronetLibraryIntegrity.kt",
+            "io/legado/app/lib/cronet/CronetLoader.kt", "io/legado/app/lib/cronet/VerifiedLibraryCache.kt", "io/legado/app/web/api/WebApiRequest.kt")
     }
 }
 application { mainClass.set("security.IngressRegressionKt") }

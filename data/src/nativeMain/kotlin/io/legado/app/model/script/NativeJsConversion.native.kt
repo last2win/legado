@@ -12,15 +12,32 @@ internal fun nativeConversionBudget() = JsConversionBudget {
     if (scope?.budget?.interrupted() == true) throw NativeScriptException("JS conversion execution limit exceeded")
 }
 
+/** Keep every active conversion deadline visible to QuickJS while getters/coercion execute in C. */
+internal fun <T> withNativeConversionBudget(
+    budget: JsConversionBudget = nativeConversionBudget(),
+    block: (JsConversionBudget) -> T,
+): T {
+    val runtime = NativeJsEngine.currentScope()?.budget
+    val convert = {
+        budget.check()
+        block(budget).also { budget.check() }
+    }
+    return if (runtime == null) convert() else runtime.converting(budget, convert)
+}
+
 /** Count the UTF-8 payload BEFORE allocating a Kotlin byte array/String. */
-internal fun boundedJsString(ctx: CPointer<JSContext>, value: CValue<JSValue>, budget: JsConversionBudget): String? = memScoped {
-    budget.check()
-    val length = alloc<ULongVar>()
-    val chars = JS_ToCStringLen2(ctx, length.ptr, value, false) ?: return@memScoped null
-    try {
-        require(length.value <= (JsConversionBudget.MAX_BYTES / 4).toULong()) { "JS conversion byte limit exceeded" }
-        val count = length.value.toInt()
-        budget.bytes(count.toLong() * 4) // UTF-8 copy plus decoded UTF-16 and conversion overhead
-        chars.readBytes(count).decodeToString()
-    } finally { qjs_FreeCString(ctx, chars) }
+internal fun boundedJsString(
+    ctx: CPointer<JSContext>, value: CValue<JSValue>, budget: JsConversionBudget,
+): String? = withNativeConversionBudget(budget) {
+    memScoped {
+        budget.check()
+        val length = alloc<ULongVar>()
+        val chars = JS_ToCStringLen2(ctx, length.ptr, value, false) ?: return@memScoped null
+        try {
+            require(length.value <= (JsConversionBudget.MAX_BYTES / 4).toULong()) { "JS conversion byte limit exceeded" }
+            val count = length.value.toInt()
+            budget.bytes(count.toLong() * 4) // UTF-8 copy plus decoded UTF-16 and conversion overhead
+            chars.readBytes(count).decodeToString()
+        } finally { qjs_FreeCString(ctx, chars) }
+    }
 }

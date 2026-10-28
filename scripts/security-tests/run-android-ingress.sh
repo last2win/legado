@@ -10,6 +10,8 @@ classpath="$KOTLIN_STDLIB:$SECURITY_TEST_DEPS/coroutines.jar"
   core/src/commonMain/kotlin/io/legado/app/web/api/WebApiRequest.kt \
   app/src/main/java/io/legado/app/api/ReaderProvider.kt \
   app/src/main/java/io/legado/app/lib/cronet/CronetLibraryIntegrity.kt \
+  app/src/main/java/io/legado/app/lib/cronet/CronetLoader.kt \
+  app/src/main/java/io/legado/app/lib/cronet/VerifiedLibraryCache.kt \
   scripts/security-tests/android/*.kt
 "$JAVA_HOME/bin/java" -Xmx256m -cp "$work/tests.jar:$classpath" security.IngressRegressionKt
 python3 - <<'PY'

@@ -18,6 +18,29 @@ import org.jsoup.internal.HttpConnectionRequest
 
 /** Run on macOS with :data:iosSimulatorArm64Test; exercises the actual QuickJS bridge. */
 class NativeJsLifetimeTest {
+    @Test fun gettersAndStringCoercionHonorConversionDeadlineInsideQuickJs() {
+        val java = object : JsExtensionsCommon { override fun getSource() = null }
+        val scope = NativeJsEngine.getRuntimeScope(JsBindings().apply { this["java"] = java }) as NativeJsScope
+        try {
+            scope.budget.timeoutMillis = 20_000
+            // Finite eight-second getters: old checkpoint-only conversions run past the five-second
+            // deadline. The new interrupt integration stops each one while still executing in C.
+            val slow = "var end = Date.now() + 8000; while (Date.now() < end) {}"
+            for (script in listOf(
+                "({get value() { $slow; return 1; }})",
+                "var a = [1]; Object.defineProperty(a, 0, {get: function() { $slow; return 1; }}); java.base64Encode(a)",
+                "java.base64Encode({toString: function() { $slow; return 'a'; }})"
+            )) {
+                val started = kotlin.time.TimeSource.Monotonic.markNow()
+                val error = assertFailsWith<Throwable> { NativeJsEngine.eval(script, scope, null) }
+                val elapsed = started.elapsedNow().inWholeMilliseconds
+                assertTrue(elapsed in 4_000..7_500, "Conversion interruption took ${elapsed}ms: ${error.message}")
+                assertTrue(error.message.orEmpty().contains("conversion", true) || error.message.orEmpty().contains("interrupted", true), error.message)
+                assertEquals("alive", NativeJsEngine.eval("'alive'", scope, null))
+            }
+        } finally { scope.close() }
+    }
+
     @Test fun failedSharedLibraryInitializationReleasesRuntime() {
         val provider = NativeQuickJsSharedJsScopeProvider
         val baseline = NativeJsScope.liveScopeCount

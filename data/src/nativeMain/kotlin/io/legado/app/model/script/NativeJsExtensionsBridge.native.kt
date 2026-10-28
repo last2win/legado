@@ -1209,11 +1209,14 @@ function __createJsUrlObj(handle) {
     }
 
     /** JS Array → Kotlin List<Any?> (递归取元素, 带深度上限) */
+    private fun jsArrayToList(ctx: CPointer<JSContext>, arr: CValue<JSValue>): List<Any?> =
+        withNativeConversionBudget { jsArrayToList(ctx, arr, 0, it) }
+
     private fun jsArrayToList(
         ctx: CPointer<JSContext>,
         arr: CValue<JSValue>,
-        depth: Int = 0,
-        budget: JsConversionBudget = nativeConversionBudget()
+        depth: Int,
+        budget: JsConversionBudget
     ): List<Any?> {
         if (depth > MAX_JS_DEPTH) throw NativeScriptException(JS_DEPTH_ERROR_MESSAGE)
         budget.node(depth)

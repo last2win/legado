@@ -12,9 +12,16 @@ internal class NativeScriptBudget {
     var cancelled: () -> Boolean = { false }
     private var started: TimeMark? = null
     private var depth = 0
+    private val conversions = mutableListOf<JsConversionBudget>()
 
-    fun interrupted(): Boolean = cancelled() || started?.elapsedNow()?.inWholeMilliseconds
+    fun interrupted(): Boolean = cancelled() || conversions.any { it.expired() } || started?.elapsedNow()?.inWholeMilliseconds
         ?.let { it >= timeoutMillis } == true
+
+    fun <T> converting(budget: JsConversionBudget, block: () -> T): T {
+        conversions.add(budget)
+        try { return block() }
+        finally { conversions.removeAt(conversions.lastIndex) }
+    }
 
     fun <T> use(block: () -> T): T {
         if (depth++ == 0) started = TimeSource.Monotonic.markNow()
