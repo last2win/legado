@@ -21,3 +21,19 @@ fun archiveBookFileNames(paths: List<String>): Map<String, String> {
     require(result.values.map { it.lowercase() }.distinct().size == result.size) { "Archive filename collision" }
     return result
 }
+
+/** Persist the original entry independently of the flattened on-disk filename. */
+internal const val ARCHIVE_ENTRY_VARIABLE = "legado.archive.entry"
+
+/** Resolve once, before writing any file. Never use substring matching for archive identity. */
+fun resolveArchiveBookEntry(paths: List<String>, savedName: String, originalEntry: String? = null): String {
+    val names = archiveBookFileNames(paths)
+    if (!originalEntry.isNullOrBlank()) {
+        require(names.containsKey(originalEntry)) { "Original archive entry is missing" }
+        return originalEntry
+    }
+    // Also recover files imported before entry metadata existed, including hashed collision names.
+    val matches = names.filter { (path, name) -> name == savedName || path == savedName }.keys
+    require(matches.size == 1) { "Archive entry is missing or ambiguous" }
+    return matches.single()
+}

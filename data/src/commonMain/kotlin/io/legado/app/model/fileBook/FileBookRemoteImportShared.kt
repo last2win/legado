@@ -1,13 +1,14 @@
 package io.legado.app.model.fileBook
 
 import io.legado.app.help.archive.archiveBookFileNames
+import io.legado.app.help.archive.resolveArchiveBookEntry
+import io.legado.app.help.archive.ARCHIVE_ENTRY_VARIABLE
 import io.legado.app.constant.AppPattern
 import io.legado.app.constant.BookType
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.book.addType
-import io.legado.app.help.book.archiveName
 import io.legado.app.help.book.getRemoteUrl
 import io.legado.app.help.book.isArchive
 import io.legado.app.help.book.isLocal
@@ -103,13 +104,7 @@ object FileBookRemoteImportShared {
                     if (hasImageFile) {
                         importAsImage()
                     } else if (bookEntries.isNotEmpty()) {
-                        val entry = bookEntries.first()
-                        val uriStr = accessor.saveBookFile(remoteZip.getInputStream(entry), names.getValue(entry.name))
-                        accessor.importLocalFile(uriStr).apply {
-                            this.origin = origin
-                            addType(BookType.archive)
-                            save()
-                        }
+                        importRemoteArchiveEntry(remoteZip, origin, names)
                     } else throw NoStackTraceException("不支持的压缩包格式")
                 } finally {
                     remoteZip.close()
@@ -120,6 +115,31 @@ object FileBookRemoteImportShared {
                 this.origin = origin
                 save()
             }
+        }
+    }
+
+    private fun saveArchiveEntry(zip: ZipFileWrapper, entry: ZipEntry, fileName: String): String {
+        val stream = zip.getInputStream(entry) ?: throw NoStackTraceException("Cannot read archive entry")
+        return try { FileBookProviders.get().saveBookFile(stream, fileName) }
+        finally { stream.close() }
+    }
+
+    /** The same import seam is used by WebDAV and the real archive round-trip regression. */
+    internal suspend fun importRemoteArchiveEntry(
+        zip: ZipFileWrapper,
+        origin: String,
+        names: Map<String, String> = archiveBookFileNames(zip.entries().filter {
+            !it.isDirectory && isBookFile(it.name)
+        }.map { it.name })
+    ): Book {
+        val accessor = FileBookProviders.get()
+        val entry = zip.getEntry(names.keys.first()) ?: error("Archive book entry is missing")
+        val uri = saveArchiveEntry(zip, entry, names.getValue(entry.name))
+        return accessor.importLocalFile(uri).apply {
+            this.origin = origin
+            putVariable(ARCHIVE_ENTRY_VARIABLE, entry.name)
+            addType(BookType.archive)
+            save()
         }
     }
 
@@ -182,14 +202,29 @@ object FileBookRemoteImportShared {
         val accessor = FileBookProviders.get()
         val webDavUrl = book.getRemoteUrl()
         if (webDavUrl.isNullOrBlank()) throw NoStackTraceException("Book file is not webDav File")
-        val fileName = if (book.isArchive) book.archiveName else book.originName
+        val fileName = if (book.isArchive) {
+            CustomUrl(webDavUrl).getUrl().substringBefore('?').substringBefore('#').substringAfterLast('/')
+        } else book.originName
         val fileUriStr = accessor.saveBookFile(webDavUrl, fileName)
         if (book.isArchive) {
-            val newBook = accessor.importFromArchive(fileUriStr, book.originName) { name ->
-                name.contains(book.originName)
-            }.firstOrNull() ?: throw NoStackTraceException("Archive contains no matching book file")
-            book.origin = newBook.origin
-            book.bookUrl = newBook.bookUrl
+            // Open the downloaded archive through the platform's authorized wrapper. Do not
+            // import a new Book: restoring bytes must preserve progress, custom metadata and origin.
+            val archiveRef = accessor.normalizeBookRef(fileUriStr)
+            val opened = ZipFileWrapperFactoryProviders.get().create(Book(
+                bookUrl = archiveRef, origin = archiveRef, originName = fileName,
+                type = BookType.local or BookType.image
+            )) ?: throw NoStackTraceException("Cannot open downloaded archive")
+            try {
+                val zip = opened.wrapper
+                val paths = zip.entries().filter { !it.isDirectory && isBookFile(it.name) }.map { it.name }
+                val entryName = resolveArchiveBookEntry(paths, book.originName, book.getVariable(ARCHIVE_ENTRY_VARIABLE))
+                val entry = zip.getEntry(entryName) ?: throw NoStackTraceException("Archive entry is missing")
+                val restored = saveArchiveEntry(zip, entry, book.originName)
+                book.bookUrl = accessor.normalizeBookRef(restored)
+                book.putVariable(ARCHIVE_ENTRY_VARIABLE, entryName)
+            } finally {
+                try { opened.wrapper.close() } finally { opened.closeable?.close() }
+            }
         } else {
             book.bookUrl = accessor.normalizeBookRef(fileUriStr)
         }

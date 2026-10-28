@@ -65,6 +65,8 @@ object ZipFileWrapperFactoryProviders {
         this.impl = impl
     }
 
+    internal fun reset() { impl = null }
+
     /** 获取已注册实现, 未注册抛出 IllegalStateException。 */
     fun get(): ZipFileWrapperFactory = impl ?: error("ZipFileWrapperFactoryProviders not registered")
 }

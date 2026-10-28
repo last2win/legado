@@ -96,15 +96,24 @@ function showConfirm(options: ConfirmOptions): Promise<'confirm' | 'cancel'> {
     box.className = 'web-confirm-box'
     box.innerHTML = `
       <div class="web-confirm-header">
-        <span class="web-confirm-icon web-confirm-icon--${options.type || 'info'}">${options.type === 'error' ? '✕' : options.type === 'warning' ? '!' : 'i'}</span>
-        <span>${options.title || '提示'}</span>
+        <span class="web-confirm-icon web-confirm-icon--info">i</span>
+        <span></span>
       </div>
-      <div class="web-confirm-body">${options.message}</div>
+      <div class="web-confirm-body"></div>
       <div class="web-confirm-footer">
-        <button class="web-btn web-btn--cancel">${options.cancelButtonText || '取消'}</button>
-        <button class="web-btn web-btn--primary">${options.confirmButtonText || '确定'}</button>
+        <button class="web-btn web-btn--cancel"></button>
+        <button class="web-btn web-btn--primary"></button>
       </div>
     `
+
+    // Only the fixed DOM scaffold is HTML. All caller-controlled fields are plain text.
+    const icon = box.querySelector('.web-confirm-icon') as HTMLElement
+    icon.className = `web-confirm-icon web-confirm-icon--${options.type || 'info'}`
+    icon.textContent = options.type === 'error' ? '✕' : options.type === 'warning' ? '!' : 'i'
+    box.querySelector('.web-confirm-header span:last-child')!.textContent = options.title || '提示'
+    box.querySelector('.web-confirm-body')!.textContent = options.message
+    box.querySelector('.web-btn--cancel')!.textContent = options.cancelButtonText || '取消'
+    box.querySelector('.web-btn--primary')!.textContent = options.confirmButtonText || '确定'
 
     overlay.appendChild(box)
     document.body.appendChild(overlay)
@@ -166,17 +175,24 @@ export const msgbox = {
       const box = document.createElement('div')
       box.className = 'web-confirm-box'
       box.innerHTML = `
-        <div class="web-confirm-header"><span>${title}</span></div>
-        <div class="web-confirm-body">${message}</div>
+        <div class="web-confirm-header"><span></span></div>
+        <div class="web-confirm-body"></div>
         <div class="web-form-group" style="padding:0 16px">
-          <input class="web-input web-prompt-input" placeholder="${options?.inputPlaceholder || ''}" />
-          <div class="web-prompt-error" style="display:none;color:var(--danger,#f56c6c);font-size:12px;margin-top:4px">${options?.inputErrorMessage || ''}</div>
+          <input class="web-input web-prompt-input" placeholder="" />
+          <div class="web-prompt-error" style="display:none;color:var(--danger,#f56c6c);font-size:12px;margin-top:4px"></div>
         </div>
         <div class="web-confirm-footer">
-          <button class="web-btn web-btn--cancel">${options?.cancelButtonText || '取消'}</button>
-          <button class="web-btn web-btn--primary">${options?.confirmButtonText || '确定'}</button>
+          <button class="web-btn web-btn--cancel"></button>
+          <button class="web-btn web-btn--primary"></button>
         </div>
       `
+
+      box.querySelector('.web-confirm-header span')!.textContent = title
+      box.querySelector('.web-confirm-body')!.textContent = message
+      box.querySelector('.web-btn--cancel')!.textContent = options?.cancelButtonText || '取消'
+      box.querySelector('.web-btn--primary')!.textContent = options?.confirmButtonText || '确定'
+      ;(box.querySelector('.web-prompt-input') as HTMLInputElement).placeholder = options?.inputPlaceholder || ''
+      box.querySelector('.web-prompt-error')!.textContent = options?.inputErrorMessage || ''
 
       overlay.appendChild(box)
       document.body.appendChild(overlay)

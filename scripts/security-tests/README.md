@@ -222,3 +222,20 @@ EPUB 测试夹具补齐 ZIP 根目录文件；生产解析器允许读取包内�
 `python3 scripts/security-tests/test_quickjs_upstream.py` 验证下载失败与比较完整性。
 Web 回归：在 `modules/web` 执行 `pnpm install --frozen-lockfile`、`pnpm exec playwright install chromium`
 和 `pnpm exec playwright test`（Node 22）。iOS 回归与完整 App 构建仍以当前提交 Actions 为准。
+
+### 弹窗、升级前改名及远程 ZIP 恢复回归
+
+- 确认框和输入框只把静态结构写入 HTML，所有调用者提供的文字均通过文本／属性 API 写入。
+  Chromium 用真实 BookInfo、BookChapter 和 Router 覆盖“自动保存失败 → 临时阅读 → 退出确认”，
+  并覆盖标题、按钮、占位符和输入错误文字。新增三个用例在修复前均失败。
+- Native 旧归档迁移不再依赖可编辑的书名和作者。只在应用旧 ArchiveTemp 目录中，按原条目
+  路径摘要和有总量限制的流式内容摘要确认唯一旧记录，保留旧书名、作者、进度、分组和设置。
+  多条旧记录匹配时直接拒绝迁移；未经确认的同名记录也不会被 REPLACE 覆盖。
+  若旧缓存文件已被删除，无法从旧版未保存的指纹中恢复可靠身份：保留旧记录，不猜测合并。
+- 远程 ZIP 在书籍变量中持久化原条目路径，安全保存名仍是单文件名。重新下载先精确选择条目，
+  再恢复文件，不重新导入默认状态的 Book，也不把 WebDAV origin 改成本地 origin。
+  没有新元数据的旧记录可通过同一安全命名表恢复；缺失或歧义会失败，不用 contains 模糊匹配。
+- `LegacyArchiveIdentityTest` 在 JVM 上验证真实文件指纹、歧义、路径变化和删除后的 ZIP 恢复；
+  `ArchiveImportStateTest` 在 iOS 上使用真实 ZIP、生产导入代码和真实 Room/SQLite，覆盖升级前
+  同时改书名／作者、重复导入、歧义保留，以及同名条目导入 → 删除本地文件 → 重新下载两次。
+  远程恢复测试仅替换下载传输和测试目录，实际 ZIP 解析和数据库状态均执行生产实现。

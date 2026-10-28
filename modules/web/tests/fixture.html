@@ -2,9 +2,11 @@
 <script type="module">
 import { createApp, h } from 'vue'
 import { createPinia } from 'pinia'
-import { createRouter, createMemoryHistory } from 'vue-router'
+import { createRouter, createMemoryHistory, RouterView } from 'vue-router'
 import ChapterContent from '../src/components/ChapterContent.vue'
 import BookChapter from '../src/views/BookChapter.vue'
+import BookInfo from '../src/views/BookInfo.vue'
+import { msgbox } from '../src/utils/toast.ts'
 import API from '../src/api/index.ts'
 import { useBookStore } from '../src/store/bookStore.ts'
 window.mountContent = content => createApp({render: () => h(ChapterContent, {
@@ -18,5 +20,17 @@ window.mountReader = () => {
   createApp(BookChapter).use(pinia).use(router).mount('#fixture')
 }
 window.proxyImageUrl = src => API.getProxyImageUrl('book', src)
+window.mountBookInfo = async name => {
+  const router = createRouter({history: createMemoryHistory(), routes: [
+    {path: '/', component: BookInfo}, {path: '/chapter', component: BookChapter},
+    {path: '/shelf', component: {render: () => h('div', '书架')}},
+  ]})
+  const pinia = createPinia()
+  useBookStore(pinia).setDetailBook({bookUrl: 'book', name, author: '', origin: 'source', type: 0})
+  createApp({render: () => h(RouterView)}).use(pinia).use(router).mount('#fixture')
+  await router.isReady()
+  window.leaveReader = () => { void router.push('/shelf') }
+}
+window.msgbox = msgbox
 window.ready = true
 </script></body></html>

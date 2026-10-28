@@ -7,6 +7,8 @@ import androidx.room3.OnConflictStrategy
 import androidx.room3.Query
 import androidx.room3.Transaction
 import androidx.room3.Update
+import io.legado.app.help.archive.findLegacyArchiveRef
+import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
@@ -138,19 +140,29 @@ interface BookDao {
         insert(newBook)
     }
 
+    @Query("SELECT bookUrl FROM books WHERE type & ${BookType.local} > 0 AND bookUrl LIKE '%/ArchiveTemp/%'")
+    suspend fun legacyArchiveRefs(): List<String>
+
     /** Preserve user state when a local import updates a URL or collides with a previous temp URL.
      * Lookup and write share a transaction so REPLACE cannot silently install default progress.
      */
     @Transaction
     suspend fun saveLocalImport(incoming: Book): Book {
-        val previous = getBook(incoming.bookUrl)
-            ?: getBook(incoming.name, incoming.author)?.takeIf { it.type and BookType.local != 0 }
+        val previous = getBook(incoming.bookUrl) ?: run {
+            val dirs = AppFilesDirs.get()
+            findLegacyArchiveRef(incoming.bookUrl, legacyArchiveRefs(), dirs.filesDir, dirs.cacheDir)
+                ?.let { getBook(it) }
+        }
         if (previous == null) {
+            // REPLACE on (name, author) would destroy an unrelated or unverifiable old state.
+            check(getBook(incoming.name, incoming.author) == null) {
+                "A book with this title and author exists, but archive identity could not be verified"
+            }
             insert(incoming)
             return incoming
         }
         val merged = previous.copy(
-            bookUrl = incoming.bookUrl, name = incoming.name, author = incoming.author,
+            bookUrl = incoming.bookUrl,
             origin = incoming.origin, originName = incoming.originName, latestChapterTime = 0
         )
         if (previous.bookUrl == merged.bookUrl) update(merged) else replace(previous, merged)

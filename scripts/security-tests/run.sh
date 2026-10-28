@@ -19,6 +19,7 @@ common=core/src/commonMain/kotlin/io/legado/app/web/api/WebAccess.kt
   data/src/commonMain/kotlin/io/legado/app/help/storage/BackupPreferencePolicy.kt \
   data/src/commonMain/kotlin/io/legado/app/help/file/SafeBookFile.kt \
   data/src/commonMain/kotlin/io/legado/app/help/archive/ArchiveEntryNames.kt \
+  data/src/commonMain/kotlin/io/legado/app/help/archive/LegacyArchiveIdentity.kt \
   data/src/commonMain/kotlin/io/legado/app/help/http/CookieUtils.kt \
   data/src/commonMain/kotlin/io/legado/app/help/storage/ArchiveLimits.kt \
   data/src/commonMain/kotlin/io/legado/app/help/storage/ArchiveReadLimits.kt \
@@ -40,6 +41,7 @@ common=core/src/commonMain/kotlin/io/legado/app/web/api/WebAccess.kt
   data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/InflateTest.kt \
   data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/ArchiveReadLimitsTest.kt \
   data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/PrivacyBoundaryTest.kt \
+  data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/LegacyArchiveIdentityTest.kt \
   data/src/jvmAndAndroidTest/kotlin/io/legado/app/model/fileBook/JsConversionBudgetTest.kt \
   scripts/security-tests/stubs/*.kt scripts/security-tests/*Regression.kt
 for test in ZipRegression BoundaryRegression ArchiveEntryRegression; do
@@ -53,4 +55,5 @@ done
 "$JAVA_HOME/bin/java" -Xmx256m -cp "$work/tests.jar:$classpath" org.junit.runner.JUnitCore \
   io.legado.app.model.fileBook.ArchiveReadLimitsTest \
   io.legado.app.model.fileBook.PrivacyBoundaryTest \
-  io.legado.app.model.fileBook.JsConversionBudgetTest
+  io.legado.app.model.fileBook.JsConversionBudgetTest \
+  io.legado.app.model.fileBook.LegacyArchiveIdentityTest
