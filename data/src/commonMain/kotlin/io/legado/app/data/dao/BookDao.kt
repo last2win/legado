@@ -138,6 +138,25 @@ interface BookDao {
         insert(newBook)
     }
 
+    /** Preserve user state when a local import updates a URL or collides with a previous temp URL.
+     * Lookup and write share a transaction so REPLACE cannot silently install default progress.
+     */
+    @Transaction
+    suspend fun saveLocalImport(incoming: Book): Book {
+        val previous = getBook(incoming.bookUrl)
+            ?: getBook(incoming.name, incoming.author)?.takeIf { it.type and BookType.local != 0 }
+        if (previous == null) {
+            insert(incoming)
+            return incoming
+        }
+        val merged = previous.copy(
+            bookUrl = incoming.bookUrl, name = incoming.name, author = incoming.author,
+            origin = incoming.origin, originName = incoming.originName, latestChapterTime = 0
+        )
+        if (previous.bookUrl == merged.bookUrl) update(merged) else replace(previous, merged)
+        return merged
+    }
+
     /**
      * 仅 PATCH 当前章节定位 (目录选章节跳阅读). 整行 update 会冲掉并发写入的其他列,
      * 也会与阅读退出时的 [updateProgress] 互相覆盖.

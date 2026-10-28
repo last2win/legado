@@ -18,6 +18,36 @@ import org.jsoup.internal.HttpConnectionRequest
 
 /** Run on macOS with :data:iosSimulatorArm64Test; exercises the actual QuickJS bridge. */
 class NativeJsLifetimeTest {
+    @Test fun sparseAndNestedResultsCannotExpandPastHostBudgets() {
+        val scope = NativeJsEngine.createStandaloneScope()
+        try {
+            for (script in listOf(
+                "new Array(1000000000)",
+                "var a = new Array(60000).fill(1); [a, a]",
+                "var s = 'x'.repeat(1024 * 1024); [s, s, s, s, s]",
+                "new Uint8Array(17 * 1024 * 1024)",
+                "Array(1000).fill({value: 'x'.repeat(8192)})"
+            )) {
+                val failure = assertFailsWith<IllegalArgumentException> { NativeJsEngine.eval(script, scope, null) }
+                assertTrue(failure.message.orEmpty().contains("JS conversion"), failure.message)
+            }
+            assertEquals(listOf(1, "中文", null, listOf(2)), NativeJsEngine.eval("[1, '中文', null, [2]]", scope, null))
+            assertEquals("a\u0000b", NativeJsEngine.eval("'a\\u0000b'", scope, null))
+        } finally { scope.close() }
+    }
+
+    @Test fun bridgeArgumentsShareOneConversionBudget() {
+        val java = object : JsExtensionsCommon { override fun getSource() = null }
+        val scope = NativeJsEngine.getRuntimeScope(JsBindings().apply { this["java"] = java })
+        try {
+            for (arg in listOf("new Array(1000000000)", "[Array(60000).fill(1), Array(60000).fill(2)]")) {
+                val failure = assertFailsWith<NativeScriptException> { NativeJsEngine.eval("java.base64Encode($arg)", scope, null) }
+                assertTrue(failure.message.orEmpty().contains("JS conversion"), failure.message)
+            }
+            assertEquals("YWJj", NativeJsEngine.eval("java.base64Encode('abc')", scope, null))
+        } finally { scope.close() }
+    }
+
     @Test
     fun pureJavaScriptLoopIsInterruptedAndScopeRemainsUsable() {
         val scope = NativeJsEngine.createStandaloneScope() as NativeJsScope

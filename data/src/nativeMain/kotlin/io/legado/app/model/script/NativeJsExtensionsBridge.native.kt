@@ -321,11 +321,12 @@ object NativeJsExtensionsBridge {
         // 返回值经 [nativeResultToJs] 转 JSValue (与手写分支同层转换语义)。
         // registerHandle: REF 返回白名单方法 (如 Response.parse) 注册对象 handle,
         // JS 层由生成闭包里的工厂函数 (__createElementObj 等) 包装。
+        val args = jsArrayToList(ctx, argsArray)
         val generated =
             NativeGeneratedDispatch.dispatch(
                 obj,
                 methodId,
-                jsArrayToList(ctx, argsArray),
+                args,
                 ::registerScopedObject
             )
         if (generated !== NativeDispatchResult.NONE) return nativeResultToJs(ctx, generated)
@@ -346,12 +347,9 @@ object NativeJsExtensionsBridge {
             return if (methodId < PROPERTY_WRITE_BASE) {
                 NativeJsPropertyBridge.dispatch(ctx, obj, methodId) ?: jsUndefined()
             } else {
-                val args = jsArrayToList(ctx, argsArray)
                 NativeJsPropertyBridge.dispatchWithArgs(ctx, obj, methodId, args) ?: jsUndefined()
             }
         }
-        // 把 JS Array 转为 Kotlin List<Any?>
-        val args = jsArrayToList(ctx, argsArray)
 
         return when {
             // ============ JsExtensionsCommon 纯函数面 (1-99) ============
@@ -369,7 +367,7 @@ object NativeJsExtensionsBridge {
             }
             obj is JsExtensionsCommon && methodId == 4 -> {
                 // bytesToStr(bytes) → String (bytes 从 JS Array 取)
-                val bytes = jsArrayToByteArray(ctx, argsArray)
+                val bytes = ByteArray(args.size) { (args[it] as? Number)?.toByte() ?: 0 }
                 stringToJsValue(ctx, obj.bytesToStr(bytes))
             }
             obj is JsExtensionsCommon && methodId == 14 -> {
@@ -1214,30 +1212,26 @@ function __createJsUrlObj(handle) {
     private fun jsArrayToList(
         ctx: CPointer<JSContext>,
         arr: CValue<JSValue>,
-        depth: Int = 0
+        depth: Int = 0,
+        budget: JsConversionBudget = nativeConversionBudget()
     ): List<Any?> {
         if (depth > MAX_JS_DEPTH) throw NativeScriptException(JS_DEPTH_ERROR_MESSAGE)
+        budget.node(depth)
         val result = mutableListOf<Any?>()
         memScoped {
             val pLen = alloc<LongVar>()
             if (JS_GetLength(ctx, arr, pLen.ptr) != 0) return@memScoped
-            val count = pLen.value.toInt()
+            val count = budget.elements(pLen.value)
             for (i in 0 until count) {
                 val elem = JS_GetPropertyUint32(ctx, arr, i.toUInt())
                 try {
-                    result.add(fromJsValue(ctx, elem, depth + 1))
+                    result.add(fromJsValue(ctx, elem, depth + 1, budget))
                 } finally {
                     JS_FreeValue(ctx, elem)
                 }
             }
         }
         return result
-    }
-
-    /** JS Array → ByteArray (每个元素 toByte) */
-    private fun jsArrayToByteArray(ctx: CPointer<JSContext>, arr: CValue<JSValue>): ByteArray {
-        val list = jsArrayToList(ctx, arr)
-        return ByteArray(list.size) { (list[it] as? Number)?.toByte() ?: 0 }
     }
 
     /** ByteArray → JS Array (每个 byte 转 Int) */
@@ -1272,12 +1266,7 @@ function __createJsUrlObj(handle) {
 
     /** JSValue → String (qjs_ToCString + qjs_FreeCString) */
     private fun jsValueToString(ctx: CPointer<JSContext>, v: CValue<JSValue>): String {
-        val cstr = qjs_ToCString(ctx, v) ?: return ""
-        return try {
-            cstr.toKString()
-        } finally {
-            qjs_FreeCString(ctx, cstr)
-        }
+        return boundedJsString(ctx, v, nativeConversionBudget()) ?: ""
     }
 
     /**
@@ -1286,8 +1275,9 @@ function __createJsUrlObj(handle) {
      * 带深度上限: 本转换与 [jsArrayToList] 互相递归, 而 JS 数组可自引用
      * (`var a=[]; a[0]=a`), 无上限会无限递归直至写穿线程栈闪退。
      */
-    private fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>, depth: Int = 0): Any? {
+    private fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>, depth: Int, budget: JsConversionBudget): Any? {
         if (depth > MAX_JS_DEPTH) throw NativeScriptException(JS_DEPTH_ERROR_MESSAGE)
+        budget.node(depth)
         if (qjs_IsNull(v) != 0 || qjs_IsUndefined(v) != 0) {
             return null
         }
@@ -1298,13 +1288,13 @@ function __createJsUrlObj(handle) {
             return readNumber(v)
         }
         if (qjs_IsString(v) != 0) {
-            return jsValueToString(ctx, v)
+            return boundedJsString(ctx, v, budget) ?: ""
         }
         if (JS_IsArray(v)) {
-            return jsArrayToList(ctx, v, depth)
+            return jsArrayToList(ctx, v, depth, budget)
         }
         // 其他类型 fallback 到字符串
-        return jsValueToString(ctx, v)
+        return boundedJsString(ctx, v, budget) ?: ""
     }
 
     /** 构造 JS undefined JSValue */

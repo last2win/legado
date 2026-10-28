@@ -418,7 +418,7 @@ actual class KmpResponse : Closeable {
         messageVal = ktorResponse.status.description
         headersVal = ktorResponse.headers.entries().associate { it.key to it.value }
         contentTypeStr = ktorResponse.headers[HttpHeaders.ContentType]
-        bodyBytes = rawBytes.let {
+        bodyBytes = if (!responseHasContent(request.method, codeVal)) ByteArray(0) else rawBytes.let {
             decompressResponseBody(
                 it,
                 ktorResponse.headers[HttpHeaders.ContentEncoding]

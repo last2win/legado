@@ -33,6 +33,9 @@ interface ArchiveProvider {
      */
     fun deCompress(archivePath: String): List<String>
 
+    /** Files intended for database-backed book imports must have stable, durable paths. */
+    fun deCompressForImport(archivePath: String): List<String> = deCompress(archivePath)
+
     /**
      * 列举压缩包内条目名 (不含目录条目)。
      *

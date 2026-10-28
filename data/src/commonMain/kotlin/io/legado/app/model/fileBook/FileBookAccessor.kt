@@ -174,4 +174,7 @@ object FileBookProviders {
 
     /** 获取已注册实现, 未注册抛出 IllegalStateException。 */
     fun get(): FileBookAccessor = impl ?: error("FileBookProviders not registered")
+
+    /** Test/provider teardown. */
+    fun reset() { impl = null }
 }

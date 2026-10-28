@@ -9,6 +9,7 @@ import io.legado.app.help.book.addType
 import io.legado.app.help.book.archiveName
 import io.legado.app.help.book.getRemoteUrl
 import io.legado.app.help.book.isArchive
+import io.legado.app.help.book.isLocal
 import io.legado.app.lib.webdav.WebDav
 import io.legado.app.model.analyzeRule.CustomUrl
 import io.legado.app.model.fileBook.FileBook.isBookFile
@@ -131,6 +132,13 @@ object FileBookRemoteImportShared {
         val accessor = FileBookProviders.get()
         val bookDao = AppDbProviders.get().bookDao
         val dbBook = bookDao.getBook(book.bookUrl)
+        if (book.isLocal && book.bookUrl.contains("/ImportedArchives/")) {
+            // Content-addressed files are unchanged on a repeat import. Keep the existing record,
+            // including custom title, progress and caches. The DAO also migrates legacy temp URLs.
+            if (dbBook != null) return dbBook
+            FileBook.upBookInfo(book)
+            return bookDao.saveLocalImport(book)
+        }
         return if (dbBook == null) {
             book.apply {
                 FileBook.upBookInfo(this)

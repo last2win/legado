@@ -2,6 +2,7 @@
 
 package io.legado.app.model.script
 
+import io.legado.app.napi.quickjs.JS_AtomToString
 import kotlinx.cinterop.StableRef
 import kotlinx.coroutines.isActive
 import com.fleeksoft.ksoup.nodes.Node
@@ -763,11 +764,8 @@ object NativeJsEngine : JsEngine {
                             exc
                         )
                         if (qjs_IsString(stackVal) != 0 || qjs_IsUndefined(stackVal) == 0) {
-                            val stackCstrVal = qjs_ToCString(ctx, stackVal)
-                            if (stackCstrVal != null) {
-                                val s = stackCstrVal.toKString()
-                                qjs_FreeCString(ctx, stackCstrVal)
-                                return@memScoped s.ifEmpty { jsValueToString(ctx, exc) }
+                            boundedJsString(ctx, stackVal, nativeConversionBudget())?.let { text ->
+                                return@memScoped text.ifEmpty { jsValueToString(ctx, exc) }
                             }
                         }
                         return@memScoped jsValueToString(ctx, exc)
@@ -784,15 +782,7 @@ object NativeJsEngine : JsEngine {
 
     /** 把任意 JSValue 转为字符串 (通过 JS_ToString + qjs_ToCString)。 */
     private fun jsValueToString(ctx: CPointer<JSContext>, v: CValue<JSValue>): String {
-        // 用 qjs_ToCString 直接转 (quickjs 内部会调 JS_ToString)
-        val cstr = qjs_ToCString(ctx, v)
-        if (cstr != null) {
-            return try {
-                cstr.toKString()
-            } finally {
-                qjs_FreeCString(ctx, cstr)
-            }
-        }
+        boundedJsString(ctx, v, nativeConversionBudget())?.let { return it }
         // toString 失败 (抛出的值不可字符串化, 如无 toString/valueOf 的对象):
         // 用纯 tag 判定给出类型描述 (对齐 Android 端 buildExceptionMessage),
         // 避免只报裸 "JS exception" 让用户无法判断书源抛的是什么。
@@ -836,7 +826,7 @@ object NativeJsEngine : JsEngine {
      * 但本函数内部创建的临时 JSValue (如 array 元素、object 属性值) 会即时 JS_FreeValue。
      */
     private fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>): Any? =
-        fromJsValue(ctx, v, 0)
+        fromJsValue(ctx, v, 0, nativeConversionBudget())
 
     /**
      * 带深度上限的 [fromJsValue]。
@@ -846,10 +836,11 @@ object NativeJsEngine : JsEngine {
      * 超过 [MAX_JS_DEPTH] 层按"对象过深"报错, 不静默截断为 null —— 静默会变成"规则莫名取不到值",
      * 报错才能让书源作者看到真实原因。
      */
-    private fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>, depth: Int): Any? {
+    private fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>, depth: Int, budget: JsConversionBudget): Any? {
         if (depth > MAX_JS_DEPTH) {
             throw NativeScriptException(JS_DEPTH_ERROR_MESSAGE)
         }
+        budget.node(depth)
         if (qjs_IsUndefined(v) != 0 || qjs_IsNull(v) != 0) return null
         if (qjs_IsBool(v) != 0) return qjs_ValueGetBool(v) != 0
         if (qjs_IsNumber(v) != 0) {
@@ -863,17 +854,12 @@ object NativeJsEngine : JsEngine {
             }
         }
         if (qjs_IsString(v) != 0) {
-            val cstr = qjs_ToCString(ctx, v) ?: return ""
-            return try {
-                cstr.toKString()
-            } finally {
-                qjs_FreeCString(ctx, cstr)
-            }
+            return boundedJsString(ctx, v, budget) ?: ""
         }
         if (qjs_IsObject(v) != 0) {
             // Uint8Array/TypedArray (解密脚本返回值): 直接拷回 ByteArray,
             // ImageUtils.decode 的 is ByteArray 分支直接消费, 无需 List 中间态
-            tryGetUint8ArrayBytes(ctx, v)?.let { return it }
+            tryGetUint8ArrayBytes(ctx, v, budget)?.let { return it }
             // 桥接对象 (java.strResponse / connect 等 API 返回的 JS 包装) 带 __h: 按句柄表还原
             // 成原 Kotlin 对象。JVM 端由 JNI 包装解包, native 端无此层, 不还原就会被拍成 Map,
             // 上层对这类返回值做类型转换必失败。
@@ -882,17 +868,12 @@ object NativeJsEngine : JsEngine {
             }
             // 判断 array 还是 plain object
             if (JS_IsArray(v)) {
-                return fromJsArray(ctx, v, depth)
+                return fromJsArray(ctx, v, depth, budget)
             }
-            return fromJsObject(ctx, v, depth)
+            return fromJsObject(ctx, v, depth, budget)
         }
         // 其他类型 (symbol/bigint/function 等) fallback 到字符串
-        val cstr = qjs_ToCString(ctx, v) ?: return null
-        return try {
-            cstr.toKString()
-        } finally {
-            qjs_FreeCString(ctx, cstr)
-        }
+        return boundedJsString(ctx, v, budget)
     }
 
     /**
@@ -911,17 +892,17 @@ object NativeJsEngine : JsEngine {
     }
 
     /** 把 JS array 转为 Kotlin List (递归, 带深度上限)。 */
-    private fun fromJsArray(ctx: CPointer<JSContext>, arr: CValue<JSValue>, depth: Int): List<Any?> {
+    private fun fromJsArray(ctx: CPointer<JSContext>, arr: CValue<JSValue>, depth: Int, budget: JsConversionBudget): List<Any?> {
         return memScoped {
             val pLen = alloc<LongVar>()
             if (JS_GetLength(ctx, arr, pLen.ptr) != 0) return@memScoped emptyList<Any?>()
-            val count = pLen.value.toInt()
+            val count = budget.elements(pLen.value)
             if (count <= 0) return@memScoped emptyList<Any?>()
             val result = ArrayList<Any?>(count)
             for (i in 0 until count) {
                 val elem = JS_GetPropertyUint32(ctx, arr, i.toUInt())
                 try {
-                    result.add(fromJsValue(ctx, elem, depth + 1))
+                    result.add(fromJsValue(ctx, elem, depth + 1, budget))
                 } finally {
                     JS_FreeValue(ctx, elem)
                 }
@@ -931,7 +912,7 @@ object NativeJsEngine : JsEngine {
     }
 
     /** 把 JS plain object 转为 [NativeNativeObject] (递归, 带深度上限)。 */
-    private fun fromJsObject(ctx: CPointer<JSContext>, obj: CValue<JSValue>, depth: Int): NativeNativeObject {
+    private fun fromJsObject(ctx: CPointer<JSContext>, obj: CValue<JSValue>, depth: Int, budget: JsConversionBudget): NativeNativeObject {
         val result = NativeNativeObject()
         memScoped {
             val pTab = alloc<CPointerVar<JSPropertyEnum>>()
@@ -939,29 +920,28 @@ object NativeJsEngine : JsEngine {
             // JS_GPN_STRING_MASK: 仅字符串 key; JS_GPN_ENUM_ONLY: 仅可枚举属性
             val flags = 1 or 16  // JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY
             if (JS_GetOwnPropertyNames(ctx, pTab.ptr, pLen.ptr, obj, flags) != 0) return@memScoped
-            val count = pLen.value.toInt()
+            val total = pLen.value
             val tab = pTab.value ?: return@memScoped
             try {
+                val count = budget.elements(total.toLong())
                 for (i in 0 until count) {
+                    budget.check()
                     val atom = tab[i.toLong()].atom
-                    val keyCstr = qjs_AtomToCString(ctx, atom)
-                    if (keyCstr != null) {
-                        val key = keyCstr.toKString()
-                        qjs_FreeCString(ctx, keyCstr)
-                        // 用 atom 取属性值 (避免再次通过 C 字符串解析)
+                    val keyValue = JS_AtomToString(ctx, atom)
+                    val key = try { boundedJsString(ctx, keyValue, budget) }
+                        finally { JS_FreeValue(ctx, keyValue) }
+                    if (key != null) {
                         val value = JS_GetProperty(ctx, obj, atom)
                         try {
-                            result[key] = fromJsValue(ctx, value, depth + 1)
-                        } finally {
-                            JS_FreeValue(ctx, value)
-                        }
+                            result[key] = fromJsValue(ctx, value, depth + 1, budget)
+                        } finally { JS_FreeValue(ctx, value) }
                     }
                 }
             } finally {
                 // 枚举结果连同其中每个属性名句柄一并释放: 逐个再释放一次会把对象仍
                 // 持有的属性名句柄多减一次引用计数, 该句柄被回收后置为空闲链标记,
                 // 后续任何枚举读到它就按指针解引用闪退
-                JS_FreePropertyEnum(ctx, tab, count.toUInt())
+                JS_FreePropertyEnum(ctx, tab, total)
             }
         }
         return result
@@ -1100,7 +1080,7 @@ object NativeJsEngine : JsEngine {
      * 再按 `byteOffset`/`byteLength` 偏移拷回 (脚本 slice/subarray 返回的视图也支持)。
      * 非 TypedArray 返回 null (交由后续分支处理)。返回的 ByteArray 由调用方持有。
      */
-    private fun tryGetUint8ArrayBytes(ctx: CPointer<JSContext>, v: CValue<JSValue>): ByteArray? {
+    private fun tryGetUint8ArrayBytes(ctx: CPointer<JSContext>, v: CValue<JSValue>, budget: JsConversionBudget): ByteArray? {
         val buf = JS_GetPropertyStr(ctx, v, "buffer")
         if (qjs_IsException(buf) != 0) {
             JS_FreeValue(ctx, buf)
@@ -1111,12 +1091,18 @@ object NativeJsEngine : JsEngine {
             if (!JS_IsArrayBuffer(buf)) return null
             return memScoped {
                 // 数据长度整数返回 + C 侧拷贝到 ByteArray (数组参数), 零指针转换
-                val totalSize = qjs_ArrayBufferSize(ctx, buf).toInt()
-                val byteOffset = jsPropNumber(ctx, v, "byteOffset")?.toInt() ?: 0
-                val byteLength = jsPropNumber(ctx, v, "byteLength")?.toInt()
-                    ?: (totalSize - byteOffset).coerceAtLeast(0)
-                if (byteOffset < 0 || byteLength <= 0) return@memScoped null
-                val len = minOf(byteLength, (totalSize - byteOffset).coerceAtLeast(0))
+                val total = qjs_ArrayBufferSize(ctx, buf)
+                require(total <= Int.MAX_VALUE.toULong()) { "JS conversion buffer length overflow" }
+                val totalSize = total.toLong()
+                val offset = jsPropNumber(ctx, v, "byteOffset")?.toDouble() ?: 0.0
+                val length = jsPropNumber(ctx, v, "byteLength")?.toDouble() ?: (totalSize - offset)
+                require(offset.isFinite() && length.isFinite() && offset >= 0 && length >= 0 &&
+                    offset <= totalSize && length <= totalSize - offset &&
+                    offset == offset.toLong().toDouble() && length == length.toLong().toDouble()) {
+                    "JS conversion invalid buffer range"
+                }
+                val byteOffset = offset.toInt()
+                val len = budget.bytes(length.toLong())
                 val out = ByteArray(len)
                 if (len > 0) {
                     // C 侧按 offset 拷贝 (JS_GetArrayBuffer 数据指针 + 偏移, 不暴露指针给 Kotlin)

@@ -54,7 +54,7 @@ object FileAssociationDispatch {
         val fileName = path.fileName()
         // 压缩包: 先解压再逐个分发 (对照 app 端 archive 分支)
         if (fileName.matches(AppPattern.archiveFileRegex)) {
-            val extracted = runCatching { ArchiveProviders.get().deCompress(path) }.getOrElse { e ->
+            val extracted = runCatching { ArchiveProviders.get().deCompressForImport(path) }.getOrElse { e ->
                 Toasters.get().toast(e.message ?: "解压失败")
                 AppLog.put("解压关联文件失败: $path", e)
                 return

@@ -33,7 +33,17 @@ object NativeArchiveProvider : ArchiveProvider {
     /** 与 app 端 ArchiveUtils.TEMP_FOLDER_NAME 对齐。 */
     override val tempFolderName: String = "ArchiveTemp"
 
-    override fun deCompress(archivePath: String): List<String> {
+    override fun deCompress(archivePath: String): List<String> = extract(archivePath) { _, files -> files }
+
+    override fun deCompressForImport(archivePath: String): List<String> {
+        val id = ArchiveBookFiles.archiveId(archivePath)
+        return extract(archivePath) { root, files ->
+            try { ArchiveBookFiles.store(id, root, files) }
+            finally { FileUtilsCommon.delete(root) }
+        }
+    }
+
+    private fun extract(archivePath: String, completed: (String, List<String>) -> List<String>): List<String> {
         require(File(archivePath).length() <= ArchiveLimits.MAX_INPUT_BYTES) { "Archive input size limit exceeded" }
         val name = archivePath.substringAfterLast('/').substringAfterLast('\\')
         val destDir = FileUtilsCommon.getPath(
@@ -75,7 +85,7 @@ object NativeArchiveProvider : ArchiveProvider {
             // 返回解压出的文件绝对路径列表 (递归, 对齐 app 端 LibArchiveUtils.unArchive 返回 List<File>)
             val result = mutableListOf<String>()
             collectFiles(File(destDir), result)
-            return result
+            return completed(destDir, result)
         } catch (failure: Throwable) {
             FileUtilsCommon.delete(destDir)
             throw failure

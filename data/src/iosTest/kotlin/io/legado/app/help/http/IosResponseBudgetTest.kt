@@ -10,6 +10,27 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.*
 
 class IosResponseBudgetTest {
+    @Test fun bodylessResponsesKeepRepresentationHeadersWithoutReadingOrDecodingContent() = runBlocking {
+        for ((method, status) in listOf("HEAD" to HttpStatusCode.OK, "GET" to HttpStatusCode.NotModified,
+            "GET" to HttpStatusCode.NoContent, "GET" to HttpStatusCode.ResetContent)) {
+            val client = HttpClient(MockEngine {
+                respond(ByteReadChannel(ByteArray(0)), status, headersOf(
+                    "Content-Length" to listOf("41943040"), "Content-Encoding" to listOf("gzip"),
+                    "ETag" to listOf("test-version")))
+            })
+            try {
+                val response = KmpHttpClient(client, 30_000, 30_000).newCall(KmpRequestBuilder()
+                    .url("https://budget.invalid/resource").method(method, null).build()).await()
+                try {
+                    assertEquals(status.value, response.code)
+                    assertEquals("41943040", response.header("Content-Length"))
+                    assertEquals("test-version", response.header("ETag"))
+                    assertEquals(0, response.body.bytes().size)
+                } finally { response.close() }
+            } finally { client.close() }
+        }
+    }
+
     @Test fun actualKmpCallRejectsOversizedBodyWithoutContentLength(): Unit = runBlocking {
         var requests = 0
         val client = HttpClient(MockEngine {
